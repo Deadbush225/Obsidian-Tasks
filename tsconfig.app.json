@@ -1,0 +1,18 @@
+{
+	"extends": "@tsconfig/svelte/tsconfig.json",
+	"compilerOptions": {
+		"tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
+		"target": "ES2018",
+		"useDefineForClassFields": true,
+		"module": "ESNext",
+		"moduleResolution": "bundler",
+		"types": ["svelte"],
+		"noEmit": true,
+		"allowJs": true,
+		"checkJs": true,
+		"moduleDetection": "force",
+		"lib": ["ES2018", "DOM"],
+		"skipLibCheck": true
+	},
+	"include": ["src/**/*.ts", "src/**/*.js", "src/**/*.svelte"]
+}
