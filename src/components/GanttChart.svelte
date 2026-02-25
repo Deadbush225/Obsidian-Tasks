@@ -5,6 +5,7 @@
   export let onOpenTask: (filePath: string) => void = () => {};
   export let onDateChange: (taskId: string, startDate: string, endDate: string) => void = () => {};
   export let onAddSubtask: (parentId: string, parentTitle: string) => void = () => {};
+  export let onArchiveTask: (taskId: string, filePath: string, isSubtask: boolean) => void = () => {};
 
   // ─── Timeline configuration ─────────────────────────────────────────────────
   const DAY_WIDTH = 32; // px per day
@@ -314,10 +315,9 @@
 
   <!-- ── LEFT column ──────────────────────────────────────────── -->
   <div class="gantt-left">
-    <!-- Blank header spacers (height must match right header) -->
+    <!-- Blank header spacer (height must match right header) -->
     <div class="left-header-spacer">
-      <div class="left-month-spacer">Month</div>
-      <div class="left-day-spacer">Task</div>
+      <div class="left-day-spacer">Tasks</div>
     </div>
 
     <!-- Task name rows (no independent scroll — scrolls with the right panel via JS sync) -->
@@ -367,6 +367,12 @@
               title="Add subtask"
             >+</button>
           {/if}
+          <!-- svelte-ignore a11y-click-events-have-key-events -->
+          <button
+            class="gantt-archive-btn"
+            on:click|stopPropagation={() => onArchiveTask(row.id, row.filePath, row.isSubtask)}
+            title="Archive task"
+          >📦</button>
         </div>
       {/each}
     </div>
@@ -377,23 +383,25 @@
     <!-- Inner container sized to full timeline width -->
     <div class="gantt-inner" style="width:{dateRange.days * DAY_WIDTH}px">
 
-      <!-- Sticky header: months row -->
-      <div class="gantt-header-months">
-        {#each headerMonths as m}
-          <div class="gantt-month-cell" style="width:{m.span * DAY_WIDTH}px">{m.label}</div>
-        {/each}
-      </div>
-
-      <!-- Sticky header: days row -->
+      <!-- Sticky header: combined months + days row -->
       <div class="gantt-header-days">
-        {#each dayHeaders as dh}
-          <div
-            class="gantt-day-cell"
-            class:weekend={dh.isWeekend}
-            class:today-col={dh.isToday}
-            style="width:{DAY_WIDTH}px"
-          >{dh.day}</div>
-        {/each}
+        <!-- Month labels as overlaid spans inside the day cells -->
+        <div class="gantt-month-labels">
+          {#each headerMonths as m}
+            <div class="gantt-month-label-cell" style="width:{m.span * DAY_WIDTH}px">{m.label}</div>
+          {/each}
+        </div>
+        <!-- Day numbers row -->
+        <div class="gantt-day-numbers">
+          {#each dayHeaders as dh}
+            <div
+              class="gantt-day-cell"
+              class:weekend={dh.isWeekend}
+              class:today-col={dh.isToday}
+              style="width:{DAY_WIDTH}px"
+            >{dh.day}</div>
+          {/each}
+        </div>
       </div>
 
       <!-- Grid rows + bars -->
@@ -469,29 +477,18 @@
     overflow: hidden;
   }
 
-  /* Spacer must match the exact pixel heights of the right-panel headers */
+  /* Spacer must match the exact pixel height of the right-panel header */
   .left-header-spacer {
     flex-shrink: 0;
     border-bottom: 1px solid var(--background-modifier-border);
   }
 
-  .left-month-spacer {
-    height: 28px;
-    line-height: 28px;
-    padding: 0 10px;
-    font-weight: 700;
-    font-size: 0.78em;
-    color: var(--text-muted);
-    border-bottom: 1px solid var(--background-modifier-border);
-    background: var(--background-secondary);
-  }
-
   .left-day-spacer {
-    height: 28px;
-    line-height: 28px;
+    height: 56px;
+    line-height: 56px;
     padding: 0 10px;
     font-size: 0.78em;
-    font-weight: 600;
+    font-weight: 700;
     color: var(--text-muted);
     background: var(--background-secondary);
   }
@@ -597,6 +594,30 @@
     border-color: var(--interactive-accent);
   }
 
+  .gantt-archive-btn {
+    flex-shrink: 0;
+    margin-left: 2px;
+    width: 18px;
+    height: 18px;
+    line-height: 16px;
+    text-align: center;
+    padding: 0;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 4px;
+    background: transparent;
+    font-size: 11px;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.15s, background 0.15s;
+  }
+  .gantt-left-row:hover .gantt-archive-btn {
+    opacity: 1;
+  }
+  .gantt-archive-btn:hover {
+    background: var(--background-modifier-error);
+    border-color: var(--background-modifier-error);
+  }
+
   /* ── Right panel ─────────────────────────────────────────────── */
   .gantt-right {
     flex: 1;
@@ -610,45 +631,52 @@
     position: relative;
   }
 
-  /* ── Sticky headers (stick to top of .gantt-right scroll) ──── */
-  .gantt-header-months,
+  /* ── Sticky header (combined months + days, 56px tall) ──── */
   .gantt-header-days {
     display: flex;
+    flex-direction: column;
     position: sticky;
-    left: 0;           /* keep it anchored when scrolling horizontally */
+    top: 0;
+    left: 0;
     background: var(--background-secondary);
     z-index: 10;
-    /* width must match the inner container — force it */
     width: max-content;
     min-width: 100%;
-  }
-
-  .gantt-header-months {
-    top: 0;
     border-bottom: 1px solid var(--background-modifier-border);
   }
 
-  .gantt-header-days {
-    top: 28px;         /* sits directly below month row */
+  /* Month labels row — each cell spans its month's width */
+  .gantt-month-labels {
+    display: flex;
+    height: 26px;
     border-bottom: 1px solid var(--background-modifier-border);
   }
 
-  .gantt-month-cell {
-    height: 28px;
-    line-height: 28px;
-    padding: 0 8px;
+  .gantt-month-label-cell {
+    height: 26px;
+    line-height: 26px;
+    text-align: center;
     font-weight: 700;
-    font-size: 0.8em;
+    font-size: 0.78em;
+    color: var(--text-normal);
     border-right: 1px solid var(--background-modifier-border);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
     flex-shrink: 0;
+    padding: 0 4px;
+    box-sizing: border-box;
+  }
+
+  /* Day numbers row */
+  .gantt-day-numbers {
+    display: flex;
+    height: 30px;
   }
 
   .gantt-day-cell {
-    height: 28px;
-    line-height: 28px;
+    height: 30px;
+    line-height: 30px;
     text-align: center;
     font-size: 0.75em;
     color: var(--text-muted);

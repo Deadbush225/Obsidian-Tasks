@@ -5,6 +5,7 @@
   export let onOpenTask: (filePath: string) => void = () => {};
   export let onStatusChange: (taskId: string, newStatus: TaskStatus) => void = () => {};
   export let onAddSubtask: (parentId: string, parentTitle: string) => void = () => {};
+  export let onArchiveTask: (taskId: string, filePath: string, isSubtask: boolean) => void = () => {};
 
   type Column = { id: TaskStatus; label: string; color: string; };
   const columns: Column[] = [
@@ -239,24 +240,29 @@
               </div>
             {/if}
 
-            {#if card.startDate || card.endDate}
+            {#if card.endDate}
               <div class="card-dates">
-                {#if card.startDate}<span>📅 {card.startDate}</span>{/if}
-                {#if card.endDate}<span>→ {card.endDate}</span>{/if}
+                <span>� Due: {card.endDate}</span>
               </div>
             {/if}
 
-            <!-- Add subtask button — only on parent cards -->
-            {#if !card.isSubtask}
-              <div class="card-footer">
+            <!-- Card footer: + Subtask (parent only) + Archive -->
+            <div class="card-footer">
+              {#if !card.isSubtask}
                 <!-- svelte-ignore a11y-click-events-have-key-events -->
                 <button
                   class="btn-add-subtask"
                   on:click|stopPropagation={() => onAddSubtask(card.id, card.title)}
                   title="Add subtask"
                 >+ Subtask</button>
-              </div>
-            {/if}
+              {/if}
+              <!-- svelte-ignore a11y-click-events-have-key-events -->
+              <button
+                class="btn-archive"
+                on:click|stopPropagation={() => onArchiveTask(card.id, card.filePath, card.isSubtask)}
+                title="Archive task"
+              >📦</button>
+            </div>
           </div>
         {/each}
 
@@ -430,6 +436,8 @@
     margin-top: 8px;
     display: flex;
     justify-content: flex-end;
+    align-items: center;
+    gap: 6px;
   }
 
   .btn-add-subtask {
@@ -446,6 +454,26 @@
     background: var(--interactive-accent);
     color: var(--text-on-accent);
     border-color: var(--interactive-accent);
+  }
+
+  .btn-archive {
+    font-size: 0.8em;
+    padding: 2px 6px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.15s, background 0.1s;
+  }
+  .kanban-card:hover .btn-archive {
+    opacity: 1;
+  }
+  .btn-archive:hover {
+    background: var(--background-modifier-error);
+    color: var(--text-on-accent);
+    border-color: var(--background-modifier-error);
   }
 
   .kanban-empty {

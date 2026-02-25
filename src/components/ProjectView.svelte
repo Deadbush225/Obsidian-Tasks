@@ -30,6 +30,13 @@
     endDate: string
   ) => Promise<void>;
 
+  export let onArchiveTask: (
+    projectFolder: string,
+    taskId: string,
+    taskFilePath: string,
+    isSubtask: boolean
+  ) => Promise<void>;
+
   export let onOpenTask: (filePath: string) => void;
   // loadProjects: called by the component itself to get fresh data
   export let loadProjectsFn: () => Promise<Project[]> = async () => [];
@@ -129,6 +136,26 @@
     await refresh();
   }
 
+  async function handleArchiveTask(
+    projectFolder: string,
+    taskId: string,
+    taskFilePath: string,
+    isSubtask: boolean
+  ) {
+    // Optimistic: remove the task/subtask from liveProjects immediately
+    liveProjects = liveProjects.map(proj => ({
+      ...proj,
+      tasks: proj.tasks
+        .filter(task => task.id !== taskId)
+        .map(task => ({
+          ...task,
+          subtasks: task.subtasks.filter(sub => sub.id !== taskId),
+        })),
+    }));
+    await onArchiveTask(projectFolder, taskId, taskFilePath, isSubtask);
+    await refresh();
+  }
+
   $: currentProject = liveProjects[activeProjectIndex] ?? null;
   $: currentTasks = currentProject?.tasks ?? [];
 </script>
@@ -200,6 +227,9 @@
           handleDateChange(currentProject.folderPath, taskId, startDate, endDate)
         }
         onAddSubtask={(parentId, parentTitle) => openNewTaskModal(parentId, parentTitle)}
+        onArchiveTask={(taskId, filePath, isSubtask) =>
+          handleArchiveTask(currentProject.folderPath, taskId, filePath, isSubtask)
+        }
       />
     {:else}
       <KanbanBoard
@@ -209,6 +239,9 @@
           handleStatusChange(currentProject.folderPath, taskId, newStatus)
         }
         onAddSubtask={(parentId, parentTitle) => openNewTaskModal(parentId, parentTitle)}
+        onArchiveTask={(taskId, filePath, isSubtask) =>
+          handleArchiveTask(currentProject.folderPath, taskId, filePath, isSubtask)
+        }
       />
     {/if}
   </div>

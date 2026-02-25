@@ -1,7 +1,7 @@
 import { ItemView, WorkspaceLeaf } from 'obsidian';
 import type GanttPlugin from './main';
 import type { Project, Task, TaskStatus } from './types';
-import { loadProjects, createTaskNote, updateTaskField } from './taskUtils';
+import { loadProjects, createTaskNote, updateTaskField, archiveTask } from './taskUtils';
 import ProjectView from './components/ProjectView.svelte';
 import { mount, unmount } from 'svelte';
 
@@ -67,6 +67,7 @@ export class GanttView extends ItemView {
         onCreateTask: this.handleCreateTask.bind(this),
         onStatusChange: this.handleStatusChange.bind(this),
         onDateChange: this.handleDateChange.bind(this),
+        onArchiveTask: this.handleArchiveTask.bind(this),
         onOpenTask: this.handleOpenTask.bind(this),
         onViewModeChange: (mode: 'gantt' | 'kanban') => { this.viewMode = mode; },
         onActiveProjectChange: (idx: number) => { this.activeProjectIndex = idx; },
@@ -132,6 +133,20 @@ export class GanttView extends ItemView {
     try {
       await updateTaskField(this.app, file, 'start_date', startDate);
       await updateTaskField(this.app, file, 'end_date', endDate);
+    } finally {
+      this._writing = false;
+    }
+  }
+
+  private async handleArchiveTask(
+    projectFolder: string,
+    taskId: string,
+    taskFilePath: string,
+    isSubtask: boolean
+  ) {
+    this._writing = true;
+    try {
+      await archiveTask(this.app, taskFilePath, taskId, projectFolder, isSubtask);
     } finally {
       this._writing = false;
     }

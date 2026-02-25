@@ -196,3 +196,57 @@ async function ensureFolder(app: App, path: string) {
     await app.vault.createFolder(path);
   }
 }
+
+/**
+ * Archive a task (and its subtasks subfolder) by moving it to
+ * <projectFolder>/archive/.
+ * - If the task is a top-level task, its note file is moved there
+ *   and its subtask subfolder (named by task id) is also moved.
+ * - If the task is a subtask, only its note file is moved.
+ */
+export async function archiveTask(
+  app: App,
+  taskFilePath: string,
+  taskId: string,
+  projectFolder: string,
+  isSubtask: boolean
+): Promise<void> {
+  const archiveDir = `${projectFolder}/archive`;
+  await ensureFolder(app, archiveDir);
+
+  // Move the task note file — use taskId as filename to avoid collisions
+  const file = app.vault.getFileByPath(taskFilePath);
+  if (file) {
+    const destPath = `${archiveDir}/${file.name}`;
+    // If a file with the same name already exists in archive, use a unique name
+    const finalDest = app.vault.getFileByPath(destPath)
+      ? `${archiveDir}/${taskId}-${file.name}`
+      : destPath;
+    await app.fileManager.renameFile(file, finalDest);
+  }
+
+  // If it is a top-level task, also move its subtask subfolder contents
+  if (!isSubtask) {
+    const subFolder = app.vault.getFolderByPath(`${projectFolder}/${taskId}`);
+    if (subFolder) {
+      const archiveSubDir = `${archiveDir}/${taskId}`;
+      await ensureFolder(app, archiveSubDir);
+      // Move all markdown files inside the subfolder
+      const children = [...subFolder.children]; // snapshot before moving
+      for (const child of children) {
+        const childFile = child as TFile;
+        if (!childFile.extension) continue; // skip sub-subfolders
+        if (childFile.extension === 'md') {
+          const childDest = app.vault.getFileByPath(`${archiveSubDir}/${childFile.name}`)
+            ? `${archiveSubDir}/${childFile.basename}-${taskId}.${childFile.extension}`
+            : `${archiveSubDir}/${childFile.name}`;
+          await app.fileManager.renameFile(childFile, childDest);
+        }
+      }
+      // Remove the now-empty subfolder via adapter
+      try {
+        await (app.vault.adapter as any).rmdir(`${projectFolder}/${taskId}`, false);
+      } catch { /* ignore if non-empty or already gone */ }
+    }
+  }
+}

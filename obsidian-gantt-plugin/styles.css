@@ -160,6 +160,8 @@
     margin-top: 8px;
     display: flex;
     justify-content: flex-end;
+    align-items: center;
+    gap: 6px;
   }
 
   .btn-add-subtask.svelte-x7v2jt {
@@ -176,6 +178,26 @@
     background: var(--interactive-accent);
     color: var(--text-on-accent);
     border-color: var(--interactive-accent);
+  }
+
+  .btn-archive.svelte-x7v2jt {
+    font-size: 0.8em;
+    padding: 2px 6px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.15s, background 0.1s;
+  }
+  .kanban-card.svelte-x7v2jt:hover .btn-archive:where(.svelte-x7v2jt) {
+    opacity: 1;
+  }
+  .btn-archive.svelte-x7v2jt:hover {
+    background: var(--background-modifier-error);
+    color: var(--text-on-accent);
+    border-color: var(--background-modifier-error);
   }
 
   .kanban-empty.svelte-x7v2jt {
@@ -208,29 +230,18 @@
     overflow: hidden;
   }
 
-  /* Spacer must match the exact pixel heights of the right-panel headers */
+  /* Spacer must match the exact pixel height of the right-panel header */
   .left-header-spacer.svelte-152mm6m {
     flex-shrink: 0;
     border-bottom: 1px solid var(--background-modifier-border);
   }
 
-  .left-month-spacer.svelte-152mm6m {
-    height: 28px;
-    line-height: 28px;
-    padding: 0 10px;
-    font-weight: 700;
-    font-size: 0.78em;
-    color: var(--text-muted);
-    border-bottom: 1px solid var(--background-modifier-border);
-    background: var(--background-secondary);
-  }
-
   .left-day-spacer.svelte-152mm6m {
-    height: 28px;
-    line-height: 28px;
+    height: 56px;
+    line-height: 56px;
     padding: 0 10px;
     font-size: 0.78em;
-    font-weight: 600;
+    font-weight: 700;
     color: var(--text-muted);
     background: var(--background-secondary);
   }
@@ -336,6 +347,30 @@
     border-color: var(--interactive-accent);
   }
 
+  .gantt-archive-btn.svelte-152mm6m {
+    flex-shrink: 0;
+    margin-left: 2px;
+    width: 18px;
+    height: 18px;
+    line-height: 16px;
+    text-align: center;
+    padding: 0;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 4px;
+    background: transparent;
+    font-size: 11px;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.15s, background 0.15s;
+  }
+  .gantt-left-row.svelte-152mm6m:hover .gantt-archive-btn:where(.svelte-152mm6m) {
+    opacity: 1;
+  }
+  .gantt-archive-btn.svelte-152mm6m:hover {
+    background: var(--background-modifier-error);
+    border-color: var(--background-modifier-error);
+  }
+
   /* ── Right panel ─────────────────────────────────────────────── */
   .gantt-right.svelte-152mm6m {
     flex: 1;
@@ -349,45 +384,52 @@
     position: relative;
   }
 
-  /* ── Sticky headers (stick to top of .gantt-right scroll) ──── */
-  .gantt-header-months.svelte-152mm6m,
+  /* ── Sticky header (combined months + days, 56px tall) ──── */
   .gantt-header-days.svelte-152mm6m {
     display: flex;
+    flex-direction: column;
     position: sticky;
-    left: 0;           /* keep it anchored when scrolling horizontally */
+    top: 0;
+    left: 0;
     background: var(--background-secondary);
     z-index: 10;
-    /* width must match the inner container — force it */
     width: max-content;
     min-width: 100%;
-  }
-
-  .gantt-header-months.svelte-152mm6m {
-    top: 0;
     border-bottom: 1px solid var(--background-modifier-border);
   }
 
-  .gantt-header-days.svelte-152mm6m {
-    top: 28px;         /* sits directly below month row */
+  /* Month labels row — each cell spans its month's width */
+  .gantt-month-labels.svelte-152mm6m {
+    display: flex;
+    height: 26px;
     border-bottom: 1px solid var(--background-modifier-border);
   }
 
-  .gantt-month-cell.svelte-152mm6m {
-    height: 28px;
-    line-height: 28px;
-    padding: 0 8px;
+  .gantt-month-label-cell.svelte-152mm6m {
+    height: 26px;
+    line-height: 26px;
+    text-align: center;
     font-weight: 700;
-    font-size: 0.8em;
+    font-size: 0.78em;
+    color: var(--text-normal);
     border-right: 1px solid var(--background-modifier-border);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
     flex-shrink: 0;
+    padding: 0 4px;
+    box-sizing: border-box;
+  }
+
+  /* Day numbers row */
+  .gantt-day-numbers.svelte-152mm6m {
+    display: flex;
+    height: 30px;
   }
 
   .gantt-day-cell.svelte-152mm6m {
-    height: 28px;
-    line-height: 28px;
+    height: 30px;
+    line-height: 30px;
     text-align: center;
     font-size: 0.75em;
     color: var(--text-muted);
