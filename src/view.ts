@@ -9,11 +9,11 @@ export const GANTT_VIEW_TYPE = 'obsidian-gantt-view';
 
 export class GanttView extends ItemView {
   plugin: GanttPlugin;
-  private svelteComponent: ReturnType<typeof mount> | null = null;
-  private projects: Project[] = [];
+  private svelteComponent: Record<string, any> | null = null;
+  // These are kept in the TS class so they survive vault-event refreshes
   private activeProjectIndex = 0;
   private viewMode: 'gantt' | 'kanban' = 'gantt';
-  /** Prevent vault-event re-renders during our own programmatic writes */
+  /** Set true during our own vault writes to suppress the vault-event re-render */
   private _writing = false;
 
   constructor(leaf: WorkspaceLeaf, plugin: GanttPlugin) {
@@ -21,35 +21,18 @@ export class GanttView extends ItemView {
     this.plugin = plugin;
   }
 
-  getViewType(): string {
-    return GANTT_VIEW_TYPE;
-  }
-
-  getDisplayText(): string {
-    return 'Project Board';
-  }
-
-  getIcon(): string {
-    return 'layout-dashboard';
-  }
+  getViewType(): string { return GANTT_VIEW_TYPE; }
+  getDisplayText(): string { return 'Project Board'; }
+  getIcon(): string { return 'layout-dashboard'; }
 
   async onOpen(): Promise<void> {
-    this.projects = await loadProjects(this.app, this.plugin.settings.projectsFolder);
     this.mountSvelte();
 
-    // Re-render when vault changes (but not during our own writes)
-    this.registerEvent(
-      this.app.vault.on('create', () => { if (!this._writing) this.refresh(); })
-    );
-    this.registerEvent(
-      this.app.vault.on('modify', () => { if (!this._writing) this.refresh(); })
-    );
-    this.registerEvent(
-      this.app.vault.on('delete', () => { if (!this._writing) this.refresh(); })
-    );
-    this.registerEvent(
-      this.app.vault.on('rename', () => { if (!this._writing) this.refresh(); })
-    );
+    // Trigger the component's own refresh when vault changes happen externally
+    this.registerEvent(this.app.vault.on('create', () => { if (!this._writing) this.triggerComponentRefresh(); }));
+    this.registerEvent(this.app.vault.on('modify', () => { if (!this._writing) this.triggerComponentRefresh(); }));
+    this.registerEvent(this.app.vault.on('delete', () => { if (!this._writing) this.triggerComponentRefresh(); }));
+    this.registerEvent(this.app.vault.on('rename', () => { if (!this._writing) this.triggerComponentRefresh(); }));
   }
 
   async onClose(): Promise<void> {
@@ -59,11 +42,15 @@ export class GanttView extends ItemView {
     }
   }
 
-  private mountSvelte() {
-    if (this.svelteComponent) {
-      unmount(this.svelteComponent);
-      this.svelteComponent = null;
+  /** Called by vault events — tells the Svelte component to reload its own data */
+  private triggerComponentRefresh() {
+    if (this.svelteComponent?.refresh) {
+      this.svelteComponent.refresh();
     }
+  }
+
+  private mountSvelte() {
+    if (this.svelteComponent) return; // already mounted; component manages its own data
 
     const container = this.containerEl.children[1] as HTMLElement;
     container.empty();
@@ -73,30 +60,26 @@ export class GanttView extends ItemView {
     this.svelteComponent = mount(ProjectView, {
       target: container,
       props: {
-        projects: this.projects,
+        projects: [],          // initial empty; component loads via loadProjectsFn
         activeProjectIndex: this.activeProjectIndex,
         viewMode: this.viewMode,
+        loadProjectsFn: () => loadProjects(this.app, this.plugin.settings.projectsFolder),
         onCreateTask: this.handleCreateTask.bind(this),
         onStatusChange: this.handleStatusChange.bind(this),
         onDateChange: this.handleDateChange.bind(this),
         onOpenTask: this.handleOpenTask.bind(this),
-        onRefresh: this.refresh.bind(this),
         onViewModeChange: (mode: 'gantt' | 'kanban') => { this.viewMode = mode; },
         onActiveProjectChange: (idx: number) => { this.activeProjectIndex = idx; },
       },
     });
-  }
 
-  async refresh() {
-    this.projects = await loadProjects(this.app, this.plugin.settings.projectsFolder);
-    this.mountSvelte();
+    // Kick off the initial data load inside the component
+    this.triggerComponentRefresh();
   }
 
   private handleOpenTask(filePath: string) {
     const file = this.app.vault.getFileByPath(filePath);
-    if (file) {
-      this.app.workspace.getLeaf(false).openFile(file);
-    }
+    if (file) this.app.workspace.getLeaf(false).openFile(file);
   }
 
   private async handleCreateTask(
@@ -105,15 +88,24 @@ export class GanttView extends ItemView {
     parentId: string | null,
     extra: Partial<Task>
   ) {
-    await createTaskNote(this.app, projectFolder, title, parentId, extra);
+    this._writing = true;
+    try {
+      await createTaskNote(this.app, projectFolder, title, parentId, extra);
+    } finally {
+      this._writing = false;
+    }
+    // Component will call its own refresh after onCreateTask resolves
   }
 
   private async handleStatusChange(
-    projectFolder: string,
+    _projectFolder: string,
     taskId: string,
     newStatus: TaskStatus
   ) {
-    const task = this.findTaskById(taskId);
+    // Need a snapshot of projects to find the file path.
+    // We load fresh here so we always have current data.
+    const projects = await loadProjects(this.app, this.plugin.settings.projectsFolder);
+    const task = this.findTaskById(projects, taskId);
     if (!task) return;
     const file = this.app.vault.getFileByPath(task.filePath);
     if (!file) return;
@@ -123,16 +115,16 @@ export class GanttView extends ItemView {
     } finally {
       this._writing = false;
     }
-    await this.refresh();
   }
 
   private async handleDateChange(
-    projectFolder: string,
+    _projectFolder: string,
     taskId: string,
     startDate: string,
     endDate: string
   ) {
-    const task = this.findTaskById(taskId);
+    const projects = await loadProjects(this.app, this.plugin.settings.projectsFolder);
+    const task = this.findTaskById(projects, taskId);
     if (!task) return;
     const file = this.app.vault.getFileByPath(task.filePath);
     if (!file) return;
@@ -143,11 +135,10 @@ export class GanttView extends ItemView {
     } finally {
       this._writing = false;
     }
-    await this.refresh();
   }
 
-  private findTaskById(id: string): Task | null {
-    for (const proj of this.projects) {
+  private findTaskById(projects: Project[], id: string): Task | null {
+    for (const proj of projects) {
       for (const task of proj.tasks) {
         if (task.id === id) return task;
         for (const sub of task.subtasks) {

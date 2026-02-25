@@ -1,10 +1,10 @@
 {
-  "id": "obsidian-gantt",
-  "name": "Obsidian Gantt & Kanban",
-  "version": "1.0.0",
-  "minAppVersion": "1.0.0",
-  "description": "Monday.com-style project management with Gantt and Kanban views",
-  "author": "deadbush225",
-  "authorUrl": "",
-  "isDesktopOnly": false
+	"id": "obsidian-gantt",
+	"name": "Obsidian Gantt & Kanban",
+	"version": "1.0.0",
+	"minAppVersion": "1.0.0",
+	"description": "Monday.com-style project management with Gantt and Kanban views",
+	"author": "deadbush225",
+	"authorUrl": "",
+	"isDesktopOnly": false
 }

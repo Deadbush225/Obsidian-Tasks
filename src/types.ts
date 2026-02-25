@@ -5,6 +5,9 @@ export interface Subtask {
   id: string;
   title: string;
   status: TaskStatus;
+  priority: TaskPriority;
+  startDate: string | null;
+  endDate: string | null;
   filePath: string;
   parentId: string;
 }

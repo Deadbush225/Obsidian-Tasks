@@ -4,6 +4,7 @@
   export let tasks: Task[] = [];
   export let onOpenTask: (filePath: string) => void = () => {};
   export let onDateChange: (taskId: string, startDate: string, endDate: string) => void = () => {};
+  export let onAddSubtask: (parentId: string, parentTitle: string) => void = () => {};
 
   // ─── Timeline configuration ─────────────────────────────────────────────────
   const DAY_WIDTH = 32; // px per day
@@ -117,6 +118,12 @@
   }
 
   // ─── Flat row list (tasks + subtasks interleaved) ────────────────────────────
+  // Same palette as KanbanBoard for consistent per-task colors
+  const PALETTE = [
+    '#7c6af7', '#f7926a', '#6bbff7', '#f7c86a', '#6af79e',
+    '#f76a9e', '#6af7f0', '#c86af7', '#f7f06a', '#6a9ef7',
+  ];
+
   type GanttRow = {
     id: string;
     title: string;
@@ -126,9 +133,15 @@
     isSubtask: boolean;
     depth: number;
     status: string;
+    barColor: string; // parent color for subtasks; own palette color for tasks
+    parentTitle: string;
   };
 
-  $: rows = buildRows(tasks);
+  $: rows = buildRows(tasks, expanded);
+
+  // When tasks prop refreshes from disk, clear any stale bar overrides
+  // (the updated startDate/endDate from the prop is now authoritative)
+  $: { tasks; barOverrides = new Map(); }
 
   let expanded: Set<string> = new Set();
 
@@ -138,12 +151,13 @@
     } else {
       expanded.add(id);
     }
-    expanded = expanded; // trigger reactivity
+    expanded = new Set(expanded); // new reference — forces $: rows to re-run
   }
 
-  function buildRows(tasks: Task[]): GanttRow[] {
+  function buildRows(tasks: Task[], expanded: Set<string>): GanttRow[] {
     const result: GanttRow[] = [];
-    for (const t of tasks) {
+    tasks.forEach((t, taskIdx) => {
+      const taskColor = PALETTE[taskIdx % PALETTE.length];
       result.push({
         id: t.id,
         title: t.title,
@@ -153,6 +167,8 @@
         isSubtask: false,
         depth: 0,
         status: t.status,
+        barColor: taskColor,
+        parentTitle: '',
       });
       if (t.subtasks.length > 0 && expanded.has(t.id)) {
         for (const s of t.subtasks) {
@@ -161,14 +177,16 @@
             title: s.title,
             filePath: s.filePath,
             startDate: s.startDate ?? null,
-            endDate: (s as any).endDate ?? null,
+            endDate: s.endDate ?? null,
             isSubtask: true,
             depth: 1,
             status: s.status,
+            barColor: taskColor, // ← same color as parent
+            parentTitle: t.title,
           });
         }
       }
-    }
+    });
     return result;
   }
 
@@ -308,7 +326,7 @@
         <div
           class="gantt-left-row"
           class:subtask-row={row.isSubtask}
-          style="height:{ROW_HEIGHT}px; padding-left:{8 + row.depth * 18}px"
+          style="height:{ROW_HEIGHT}px; padding-left:{8 + row.depth * 18}px; border-left: 3px solid {row.barColor};"
         >
           {#if !row.isSubtask}
             {@const task = tasks.find(t => t.id === row.id)}
@@ -324,17 +342,31 @@
             <span class="expand-placeholder"></span>
           {/if}
 
-          <!-- svelte-ignore a11y-click-events-have-key-events -->
-          <span
-            class="gantt-task-link"
-            on:click={() => onOpenTask(row.filePath)}
-            on:keydown={(e) => e.key === 'Enter' && onOpenTask(row.filePath)}
-            role="link"
-            tabindex="0"
-            title={row.title}
-          >{row.title}</span>
+          <div class="gantt-task-label-wrap">
+            <!-- svelte-ignore a11y-click-events-have-key-events -->
+            <span
+              class="gantt-task-link"
+              on:click={() => onOpenTask(row.filePath)}
+              on:keydown={(e) => e.key === 'Enter' && onOpenTask(row.filePath)}
+              role="link"
+              tabindex="0"
+              title={row.title}
+            >{row.title}</span>
+            {#if row.isSubtask && row.parentTitle}
+              <span class="gantt-parent-label">{row.parentTitle}</span>
+            {/if}
+          </div>
 
           <span class="status-dot" style="background:{statusColors[row.status] ?? '#888'}"></span>
+
+          {#if !row.isSubtask}
+            <!-- svelte-ignore a11y-click-events-have-key-events -->
+            <button
+              class="gantt-add-subtask-btn"
+              on:click|stopPropagation={() => onAddSubtask(row.id, row.title)}
+              title="Add subtask"
+            >+</button>
+          {/if}
         </div>
       {/each}
     </div>
@@ -397,7 +429,7 @@
               <!-- svelte-ignore a11y-no-static-element-interactions -->
               <div
                 class="gantt-bar"
-                style="left:{bar.startDay * DAY_WIDTH}px; width:{(bar.endDay - bar.startDay + 1) * DAY_WIDTH}px; background:{statusColors[row.status] ?? '#6bb6ff'}; top:{(ROW_HEIGHT - 24) / 2}px;"
+                style="left:{bar.startDay * DAY_WIDTH}px; width:{(bar.endDay - bar.startDay + 1) * DAY_WIDTH}px; background:{row.barColor}; top:{(ROW_HEIGHT - 24) / 2}px;"
                 on:mousedown={(e) => onBarMouseDown(row, 'move', e)}
               >
                 <!-- svelte-ignore a11y-no-static-element-interactions -->
@@ -504,21 +536,65 @@
   }
 
   .gantt-task-link {
-    flex: 1;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
     cursor: pointer;
     color: var(--text-accent);
+    line-height: 1.2;
   }
 
   .gantt-task-link:hover { text-decoration: underline; }
+
+  .gantt-task-label-wrap {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    overflow: hidden;
+    min-width: 0;
+  }
+
+  .gantt-parent-label {
+    font-size: 0.7em;
+    color: var(--text-muted);
+    font-style: italic;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
 
   .status-dot {
     width: 8px;
     height: 8px;
     border-radius: 50%;
     flex-shrink: 0;
+  }
+
+  .gantt-add-subtask-btn {
+    flex-shrink: 0;
+    margin-left: 2px;
+    width: 18px;
+    height: 18px;
+    line-height: 16px;
+    text-align: center;
+    padding: 0;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 14px;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.15s, background 0.15s;
+  }
+  .gantt-left-row:hover .gantt-add-subtask-btn {
+    opacity: 1;
+  }
+  .gantt-add-subtask-btn:hover {
+    background: var(--interactive-accent);
+    color: var(--text-on-accent);
+    border-color: var(--interactive-accent);
   }
 
   /* ── Right panel ─────────────────────────────────────────────── */

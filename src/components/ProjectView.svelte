@@ -4,6 +4,8 @@
   import GanttChart from './GanttChart.svelte';
   import TaskModal from './TaskModal.svelte';
 
+  // ─── Props ──────────────────────────────────────────────────────────────────
+  // Initial data + stable callbacks — never re-passed from outside after mount
   export let projects: Project[] = [];
   export let activeProjectIndex: number = 0;
   export let viewMode: 'gantt' | 'kanban' = 'gantt';
@@ -29,9 +31,24 @@
   ) => Promise<void>;
 
   export let onOpenTask: (filePath: string) => void;
-  export let onRefresh: () => Promise<void>;
+  // loadProjects: called by the component itself to get fresh data
+  export let loadProjectsFn: () => Promise<Project[]> = async () => [];
   export let onViewModeChange: (mode: 'gantt' | 'kanban') => void = () => {};
   export let onActiveProjectChange: (idx: number) => void = () => {};
+
+  // ─── Internal reactive state ────────────────────────────────────────────────
+  // `liveProjects` is owned by this component — mutating it triggers Svelte re-renders
+  let liveProjects: Project[] = projects;
+  let loading = false;
+
+  export async function refresh() {
+    loading = true;
+    try {
+      liveProjects = await loadProjectsFn();
+    } finally {
+      loading = false;
+    }
+  }
 
   function setViewMode(mode: 'gantt' | 'kanban') {
     viewMode = mode;
@@ -56,7 +73,7 @@
 
   async function handleModalSubmit(data: any) {
     showModal = false;
-    const project = projects[activeProjectIndex];
+    const project = liveProjects[activeProjectIndex];
     if (!project) return;
 
     await onCreateTask(project.folderPath, data.title, modalParentId, {
@@ -68,10 +85,51 @@
       tags: data.tags ? data.tags.split(',').map((t: string) => t.trim()).filter(Boolean) : [],
       description: data.description,
     });
-    await onRefresh();
+    await refresh();
   }
 
-  $: currentProject = projects[activeProjectIndex] ?? null;
+  async function handleStatusChange(projectFolder: string, taskId: string, newStatus: TaskStatus) {
+    // Optimistic update — mutate liveProjects in-memory immediately
+    liveProjects = liveProjects.map(proj => ({
+      ...proj,
+      tasks: proj.tasks.map(task => {
+        if (task.id === taskId) return { ...task, status: newStatus };
+        return {
+          ...task,
+          subtasks: task.subtasks.map(sub =>
+            sub.id === taskId ? { ...sub, status: newStatus } : sub
+          ),
+        };
+      }),
+    }));
+    // Persist to disk
+    await onStatusChange(projectFolder, taskId, newStatus);
+    // Sync from disk to pick up any side-effects
+    await refresh();
+  }
+
+  async function handleDateChange(
+    projectFolder: string, taskId: string, startDate: string, endDate: string
+  ) {
+    // Optimistic update
+    liveProjects = liveProjects.map(proj => ({
+      ...proj,
+      tasks: proj.tasks.map(task => {
+        if (task.id === taskId) return { ...task, startDate, endDate };
+        return {
+          ...task,
+          subtasks: task.subtasks.map(sub =>
+            sub.id === taskId ? { ...sub, startDate, endDate } : sub
+          ),
+        };
+      }),
+    }));
+    // Persist
+    await onDateChange(projectFolder, taskId, startDate, endDate);
+    await refresh();
+  }
+
+  $: currentProject = liveProjects[activeProjectIndex] ?? null;
   $: currentTasks = currentProject?.tasks ?? [];
 </script>
 
@@ -81,7 +139,7 @@
     <!-- Project selector -->
     <div class="project-selector">
       <span class="topbar-label">Project:</span>
-      {#each projects as proj, i}
+      {#each liveProjects as proj, i}
         <!-- svelte-ignore a11y-click-events-have-key-events -->
         <button
           class="project-tab"
@@ -91,7 +149,7 @@
           📁 {proj.name}
         </button>
       {/each}
-      {#if projects.length === 0}
+      {#if liveProjects.length === 0}
         <span class="no-projects">No projects found in your projects folder.</span>
       {/if}
     </div>
@@ -123,7 +181,7 @@
           + New Task
         </button>
       {/if}
-      <button class="btn-refresh" on:click={onRefresh} title="Refresh">↺</button>
+      <button class="btn-refresh" class:spinning={loading} on:click={refresh} title="Refresh">↺</button>
     </div>
   </div>
 
@@ -139,16 +197,18 @@
         tasks={currentTasks}
         {onOpenTask}
         onDateChange={(taskId, startDate, endDate) =>
-          onDateChange(currentProject.folderPath, taskId, startDate, endDate)
+          handleDateChange(currentProject.folderPath, taskId, startDate, endDate)
         }
+        onAddSubtask={(parentId, parentTitle) => openNewTaskModal(parentId, parentTitle)}
       />
     {:else}
       <KanbanBoard
         tasks={currentTasks}
         {onOpenTask}
         onStatusChange={(taskId, newStatus) =>
-          onStatusChange(currentProject.folderPath, taskId, newStatus)
+          handleStatusChange(currentProject.folderPath, taskId, newStatus)
         }
+        onAddSubtask={(parentId, parentTitle) => openNewTaskModal(parentId, parentTitle)}
       />
     {/if}
   </div>
@@ -291,11 +351,21 @@
     cursor: pointer;
     font-size: 1.1em;
     color: var(--text-muted);
+    transition: transform 0.4s;
   }
 
   .btn-refresh:hover {
     background: var(--background-modifier-hover);
     color: var(--text-normal);
+  }
+
+  .btn-refresh.spinning {
+    animation: spin 0.6s linear infinite;
+  }
+
+  @keyframes spin {
+    from { transform: rotate(0deg); }
+    to   { transform: rotate(360deg); }
   }
 
   /* ── View container ──────────────────────────────────────────── */
