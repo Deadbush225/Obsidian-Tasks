@@ -21,7 +21,7 @@ android {
 
     defaultConfig {
         applicationId = "com.example.gantt_viewer"
-        minSdk = 21  // permission_handler requires at least 21
+        minSdk = flutter.minSdkVersion  // permission_handler requires at least 21
         targetSdk = 34  // required for MANAGE_EXTERNAL_STORAGE to be evaluated
         versionCode = flutter.versionCode
         versionName = flutter.versionName
