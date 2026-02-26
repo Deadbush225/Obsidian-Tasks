@@ -209,326 +209,347 @@
     border-radius: 6px;
   }
 
-  /* ── Outer wrapper ───────────────────────────────────────────── */
-  .gantt-wrapper.svelte-152mm6m {
-    display: flex;
-    height: 100%;
-    overflow: hidden;
-    font-size: 13px;
-    background: var(--background-primary);
-    user-select: none;
-  }
+	/* ── Outer wrapper ───────────────────────────────────────────── */
+	.gantt-wrapper.svelte-152mm6m {
+		display: flex;
+		height: 100%;
+		overflow: hidden;
+		font-size: 13px;
+		background: var(--background-primary);
+		user-select: none;
+	}
 
-  /* ── Left panel ──────────────────────────────────────────────── */
-  .gantt-left.svelte-152mm6m {
-    display: flex;
-    flex-direction: column;
-    flex-shrink: 0;
-    width: 260px;
-    border-right: 2px solid var(--background-modifier-border);
-    /* overflow hidden so horizontal content doesn't bleed */
-    overflow: hidden;
-  }
+	/* ── Left panel ──────────────────────────────────────────────── */
+	.gantt-left.svelte-152mm6m {
+		display: flex;
+		flex-direction: column;
+		flex-shrink: 0;
+		width: 260px;
+		border-right: 2px solid var(--background-modifier-border);
+		/* overflow hidden so horizontal content doesn't bleed */
+		overflow: hidden;
+	}
 
-  /* Spacer must match the exact pixel height of the right-panel header */
-  .left-header-spacer.svelte-152mm6m {
-    flex-shrink: 0;
-    border-bottom: 1px solid var(--background-modifier-border);
-  }
+	/* Spacer must match the exact pixel height of the right-panel header */
+	.left-header-spacer.svelte-152mm6m {
+		flex-shrink: 0;
+		border-bottom: 1px solid var(--background-modifier-border);
+	}
 
-  .left-day-spacer.svelte-152mm6m {
-    height: 56px;
-    line-height: 56px;
-    padding: 0 10px;
-    font-size: 0.78em;
-    font-weight: 700;
-    color: var(--text-muted);
-    background: var(--background-secondary);
-  }
+	.left-day-spacer.svelte-152mm6m {
+		height: 56px;
+		line-height: 56px;
+		padding: 0 10px;
+		font-size: 0.78em;
+		font-weight: 700;
+		color: var(--text-muted);
+		background: var(--background-secondary);
+	}
 
-  /* Left rows — overflow-y hidden; vertical scroll is driven by the right panel */
-  .gantt-left-rows.svelte-152mm6m {
-    overflow: hidden;
-    flex: 1;
-  }
+	/* Left rows — overflow-y hidden; vertical scroll is driven by the right panel */
+	.gantt-left-rows.svelte-152mm6m {
+		overflow: hidden;
+		flex: 1;
+	}
 
-  .gantt-left-row.svelte-152mm6m {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    border-bottom: 1px solid var(--background-modifier-border-hover);
-    padding-right: 8px;
-    overflow: hidden;
-    box-sizing: border-box;
-  }
+	.gantt-left-row.svelte-152mm6m {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		border-bottom: 1px solid var(--background-modifier-border-hover);
+		padding-right: 8px;
+		overflow: hidden;
+		box-sizing: border-box;
+	}
 
-  .gantt-left-row.subtask-row.svelte-152mm6m {
-    background: var(--background-secondary-alt);
-    font-size: 0.88em;
-  }
+	.gantt-left-row.subtask-row.svelte-152mm6m {
+		background: var(--background-secondary-alt);
+		font-size: 0.88em;
+	}
 
-  .expand-btn.svelte-152mm6m {
-    background: none;
-    border: none;
-    cursor: pointer;
-    padding: 0;
-    width: 16px;
-    color: var(--text-muted);
-    flex-shrink: 0;
-    font-size: 12px;
-    line-height: 1;
-  }
+	.expand-btn.svelte-152mm6m {
+		background: none;
+		border: none;
+		cursor: pointer;
+		padding: 0;
+		width: 16px;
+		color: var(--text-muted);
+		flex-shrink: 0;
+		font-size: 12px;
+		line-height: 1;
+	}
 
-  .expand-placeholder.svelte-152mm6m {
-    width: 16px;
-    flex-shrink: 0;
-    display: inline-block;
-  }
+	.expand-placeholder.svelte-152mm6m {
+		width: 16px;
+		flex-shrink: 0;
+		display: inline-block;
+	}
 
-  .gantt-task-link.svelte-152mm6m {
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    cursor: pointer;
-    color: var(--text-accent);
-    line-height: 1.2;
-  }
+	.gantt-task-link.svelte-152mm6m {
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		cursor: pointer;
+		color: var(--text-accent);
+		line-height: 1.2;
+	}
 
-  .gantt-task-link.svelte-152mm6m:hover { text-decoration: underline; }
+	.gantt-task-link.svelte-152mm6m:hover {
+		text-decoration: underline;
+	}
 
-  .gantt-task-label-wrap.svelte-152mm6m {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    overflow: hidden;
-    min-width: 0;
-  }
+	.gantt-task-label-wrap.svelte-152mm6m {
+		flex: 1;
+		display: flex;
+		flex-direction: column;
+		justify-content: center;
+		overflow: hidden;
+		min-width: 0;
+	}
 
-  .gantt-parent-label.svelte-152mm6m {
-    font-size: 0.7em;
-    color: var(--text-muted);
-    font-style: italic;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
+	.gantt-parent-label.svelte-152mm6m {
+		font-size: 0.7em;
+		color: var(--text-muted);
+		font-style: italic;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
 
-  .status-dot.svelte-152mm6m {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    flex-shrink: 0;
-  }
+	.status-dot.svelte-152mm6m {
+		width: 8px;
+		height: 8px;
+		border-radius: 50%;
+		flex-shrink: 0;
+	}
 
-  .gantt-add-subtask-btn.svelte-152mm6m {
-    flex-shrink: 0;
-    margin-left: 2px;
-    width: 18px;
-    height: 18px;
-    line-height: 16px;
-    text-align: center;
-    padding: 0;
-    border: 1px solid var(--background-modifier-border);
-    border-radius: 4px;
-    background: transparent;
-    color: var(--text-muted);
-    font-size: 14px;
-    cursor: pointer;
-    opacity: 0;
-    transition: opacity 0.15s, background 0.15s;
-  }
-  .gantt-left-row.svelte-152mm6m:hover .gantt-add-subtask-btn:where(.svelte-152mm6m) {
-    opacity: 1;
-  }
-  .gantt-add-subtask-btn.svelte-152mm6m:hover {
-    background: var(--interactive-accent);
-    color: var(--text-on-accent);
-    border-color: var(--interactive-accent);
-  }
+	.gantt-add-subtask-btn.svelte-152mm6m {
+		flex-shrink: 0;
+		margin-left: 2px;
+		width: 18px;
+		height: 18px;
+		line-height: 16px;
+		text-align: center;
+		padding: 0;
+		border: 1px solid var(--background-modifier-border);
+		border-radius: 4px;
+		background: transparent;
+		color: var(--text-muted);
+		font-size: 14px;
+		cursor: pointer;
+		opacity: 0;
+		transition:
+			opacity 0.15s,
+			background 0.15s;
+	}
+	.gantt-left-row.svelte-152mm6m:hover .gantt-add-subtask-btn:where(.svelte-152mm6m) {
+		opacity: 1;
+	}
+	.gantt-add-subtask-btn.svelte-152mm6m:hover {
+		background: var(--interactive-accent);
+		color: var(--text-on-accent);
+		border-color: var(--interactive-accent);
+	}
 
-  .gantt-archive-btn.svelte-152mm6m {
-    flex-shrink: 0;
-    margin-left: 2px;
-    width: 18px;
-    height: 18px;
-    line-height: 16px;
-    text-align: center;
-    padding: 0;
-    border: 1px solid var(--background-modifier-border);
-    border-radius: 4px;
-    background: transparent;
-    font-size: 11px;
-    cursor: pointer;
-    opacity: 0;
-    transition: opacity 0.15s, background 0.15s;
-  }
-  .gantt-left-row.svelte-152mm6m:hover .gantt-archive-btn:where(.svelte-152mm6m) {
-    opacity: 1;
-  }
-  .gantt-archive-btn.svelte-152mm6m:hover {
-    background: var(--background-modifier-error);
-    border-color: var(--background-modifier-error);
-  }
+	.gantt-archive-btn.svelte-152mm6m {
+		flex-shrink: 0;
+		margin-left: 2px;
+		width: 18px;
+		height: 18px;
+		line-height: 16px;
+		text-align: center;
+		padding: 0;
+		border: 1px solid var(--background-modifier-border);
+		border-radius: 4px;
+		background: transparent;
+		font-size: 11px;
+		cursor: pointer;
+		opacity: 0;
+		transition:
+			opacity 0.15s,
+			background 0.15s;
+	}
+	.gantt-left-row.svelte-152mm6m:hover .gantt-archive-btn:where(.svelte-152mm6m) {
+		opacity: 1;
+	}
+	.gantt-archive-btn.svelte-152mm6m:hover {
+		background: var(--background-modifier-error);
+		border-color: var(--background-modifier-error);
+	}
 
-  /* ── Right panel ─────────────────────────────────────────────── */
-  .gantt-right.svelte-152mm6m {
-    flex: 1;
-    overflow: auto;   /* THIS is the single scroll container */
-    position: relative;
-  }
+	/* ── Right panel ─────────────────────────────────────────────── */
+	.gantt-right.svelte-152mm6m {
+		flex: 1;
+		overflow: auto; /* THIS is the single scroll container */
+		position: relative;
+	}
 
-  /* Inner div is as wide as all the day columns */
-  .gantt-inner.svelte-152mm6m {
-    min-height: 100%;
-    position: relative;
-  }
+	/* Inner div is as wide as all the day columns */
+	.gantt-inner.svelte-152mm6m {
+		min-height: 100%;
+		position: relative;
+	}
 
-  /* ── Sticky header (combined months + days, 56px tall) ──── */
-  .gantt-header-days.svelte-152mm6m {
-    display: flex;
-    flex-direction: column;
-    position: sticky;
-    top: 0;
-    left: 0;
-    background: var(--background-secondary);
-    z-index: 10;
-    width: max-content;
-    min-width: 100%;
-    border-bottom: 1px solid var(--background-modifier-border);
-  }
+	/* ── Sticky header (combined months + days, 56px tall) ──── */
+	.gantt-header-days.svelte-152mm6m {
+		display: flex;
+		flex-direction: column;
+		position: sticky;
+		top: 0;
+		left: 0;
+		background: var(--background-secondary);
+		z-index: 10;
+		width: max-content;
+		min-width: 100%;
+		border-bottom: 1px solid var(--background-modifier-border);
+	}
 
-  /* Month labels row — each cell spans its month's width */
-  .gantt-month-labels.svelte-152mm6m {
-    display: flex;
-    height: 26px;
-    border-bottom: 1px solid var(--background-modifier-border);
-  }
+	/* Month labels row — each cell spans its month's width */
+	.gantt-month-labels.svelte-152mm6m {
+		display: flex;
+		height: 26px;
+		border-bottom: 1px solid var(--background-modifier-border);
+	}
 
-  .gantt-month-label-cell.svelte-152mm6m {
-    height: 26px;
-    line-height: 26px;
-    text-align: center;
-    font-weight: 700;
-    font-size: 0.78em;
-    color: var(--text-normal);
-    border-right: 1px solid var(--background-modifier-border);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    flex-shrink: 0;
-    padding: 0 4px;
-    box-sizing: border-box;
-  }
+	.gantt-month-label-cell.svelte-152mm6m {
+		height: 26px;
+		line-height: 26px;
+		text-align: center;
+		font-weight: 700;
+		font-size: 0.78em;
+		color: var(--text-normal);
+		border-right: 1px solid var(--background-modifier-border);
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		flex-shrink: 0;
+		padding: 0 4px;
+		box-sizing: border-box;
+	}
 
-  /* Day numbers row */
-  .gantt-day-numbers.svelte-152mm6m {
-    display: flex;
-    height: 30px;
-  }
+	/* Day numbers row */
+	.gantt-day-numbers.svelte-152mm6m {
+		display: flex;
+		height: 30px;
+	}
 
-  .gantt-day-cell.svelte-152mm6m {
-    height: 30px;
-    line-height: 30px;
-    text-align: center;
-    font-size: 0.75em;
-    color: var(--text-muted);
-    border-right: 1px solid var(--background-modifier-border-hover);
-    flex-shrink: 0;
-    box-sizing: border-box;
-  }
+	.gantt-day-cell.svelte-152mm6m {
+		height: 30px;
+		line-height: 30px;
+		text-align: center;
+		font-size: 0.75em;
+		color: var(--text-muted);
+		border-right: 1px solid var(--background-modifier-border-hover);
+		flex-shrink: 0;
+		box-sizing: border-box;
+	}
 
-  .gantt-day-cell.weekend.svelte-152mm6m  { background: var(--background-secondary-alt); color: var(--text-faint); }
-  .gantt-day-cell.today-col.svelte-152mm6m {
-    background: color-mix(in srgb, var(--interactive-accent) 22%, transparent);
-    color: var(--interactive-accent);
-    font-weight: 700;
-  }
+	.gantt-day-cell.weekend.svelte-152mm6m {
+		background: var(--background-secondary-alt);
+		color: var(--text-faint);
+	}
+	.gantt-day-cell.today-col.svelte-152mm6m {
+		background: color-mix(in srgb, var(--interactive-accent) 22%, transparent);
+		color: var(--interactive-accent);
+		font-weight: 700;
+	}
 
-  /* ── Grid body ───────────────────────────────────────────────── */
-  .gantt-rows-container.svelte-152mm6m {
-    position: relative;
-  }
+	/* ── Grid body ───────────────────────────────────────────────── */
+	.gantt-rows-container.svelte-152mm6m {
+		position: relative;
+	}
 
-  .gantt-grid-row.svelte-152mm6m {
-    display: flex;
-    position: relative;
-    border-bottom: 1px solid var(--background-modifier-border-hover);
-    box-sizing: border-box;
-  }
+	.gantt-grid-row.svelte-152mm6m {
+		display: flex;
+		position: relative;
+		border-bottom: 1px solid var(--background-modifier-border-hover);
+		box-sizing: border-box;
+	}
 
-  .gantt-grid-cell.svelte-152mm6m {
-    flex-shrink: 0;
-    height: 100%;
-    border-right: 1px solid var(--background-modifier-border-hover);
-    cursor: crosshair;
-    box-sizing: border-box;
-  }
+	.gantt-grid-cell.svelte-152mm6m {
+		flex-shrink: 0;
+		height: 100%;
+		border-right: 1px solid var(--background-modifier-border-hover);
+		cursor: crosshair;
+		box-sizing: border-box;
+	}
 
-  .gantt-grid-cell.weekend.svelte-152mm6m   { background: var(--background-secondary-alt); }
-  .gantt-grid-cell.today-col.svelte-152mm6m { background: color-mix(in srgb, var(--interactive-accent) 8%, transparent); }
+	.gantt-grid-cell.weekend.svelte-152mm6m {
+		background: var(--background-secondary-alt);
+	}
+	.gantt-grid-cell.today-col.svelte-152mm6m {
+		background: color-mix(in srgb, var(--interactive-accent) 8%, transparent);
+	}
 
-  /* ── Today vertical line ─────────────────────────────────────── */
-  .today-line.svelte-152mm6m {
-    position: absolute;
-    top: 0;
-    width: 2px;
-    background: var(--interactive-accent);
-    opacity: 0.6;
-    pointer-events: none;
-    z-index: 5;
-  }
+	/* ── Today vertical line ─────────────────────────────────────── */
+	.today-line.svelte-152mm6m {
+		position: absolute;
+		top: 0;
+		width: 2px;
+		background: var(--interactive-accent);
+		opacity: 0.6;
+		pointer-events: none;
+		z-index: 5;
+	}
 
-  /* ── Gantt bars ──────────────────────────────────────────────── */
-  .gantt-bar.svelte-152mm6m {
-    position: absolute;
-    height: 24px;
-    border-radius: 5px;
-    cursor: grab;
-    display: flex;
-    align-items: center;
-    overflow: hidden;
-    z-index: 4;
-    box-shadow: 0 1px 4px rgba(0,0,0,0.25);
-    min-width: 10px;
-    box-sizing: border-box;
-  }
+	/* ── Gantt bars ──────────────────────────────────────────────── */
+	.gantt-bar.svelte-152mm6m {
+		position: absolute;
+		height: 24px;
+		border-radius: 5px;
+		cursor: grab;
+		display: flex;
+		align-items: center;
+		overflow: hidden;
+		z-index: 4;
+		box-shadow: 0 1px 4px rgba(0, 0, 0, 0.25);
+		min-width: 10px;
+		box-sizing: border-box;
+	}
 
-  .gantt-bar.svelte-152mm6m:hover  { filter: brightness(1.12); }
-  .gantt-bar.svelte-152mm6m:active { cursor: grabbing; }
+	.gantt-bar.svelte-152mm6m:hover {
+		filter: brightness(1.12);
+	}
+	.gantt-bar.svelte-152mm6m:active {
+		cursor: grabbing;
+	}
 
-  .bar-label.svelte-152mm6m {
-    flex: 1;
-    font-size: 0.75em;
-    font-weight: 600;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    padding: 0 4px;
-    color: rgba(0,0,0,0.8);
-    pointer-events: none;
-  }
+	.bar-label.svelte-152mm6m {
+		flex: 1;
+		font-size: 0.75em;
+		font-weight: 600;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		padding: 0 4px;
+		color: rgba(0, 0, 0, 0.8);
+		pointer-events: none;
+	}
 
-  .bar-handle.svelte-152mm6m {
-    width: 8px;
-    height: 100%;
-    flex-shrink: 0;
-    cursor: col-resize;
-    background: rgba(0,0,0,0.18);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-  }
+	.bar-handle.svelte-152mm6m {
+		width: 8px;
+		height: 100%;
+		flex-shrink: 0;
+		cursor: col-resize;
+		background: rgba(0, 0, 0, 0.18);
+		display: flex;
+		align-items: center;
+		justify-content: center;
+	}
 
-  .bar-handle.svelte-152mm6m::after {
-    content: '⋮';
-    color: rgba(0,0,0,0.45);
-    font-size: 9px;
-    pointer-events: none;
-  }
+	.bar-handle.svelte-152mm6m::after {
+		content: "⋮";
+		color: rgba(0, 0, 0, 0.45);
+		font-size: 9px;
+		pointer-events: none;
+	}
 
-  .bar-handle-left.svelte-152mm6m  { border-radius: 5px 0 0 5px; }
-  .bar-handle-right.svelte-152mm6m { border-radius: 0 5px 5px 0; }
+	.bar-handle-left.svelte-152mm6m {
+		border-radius: 5px 0 0 5px;
+	}
+	.bar-handle-right.svelte-152mm6m {
+		border-radius: 0 5px 5px 0;
+	}
 
   .task-modal-overlay.svelte-1gmf2hi {
     position: fixed;
@@ -826,6 +847,51 @@
 
   .btn-refresh.spinning.svelte-gjpmyc {
     animation: svelte-gjpmyc-spin 0.6s linear infinite;
+  }
+
+  .btn-sync.svelte-gjpmyc {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    background: none;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 5px;
+    padding: 4px 12px;
+    cursor: pointer;
+    font-size: 0.85em;
+    font-weight: 500;
+    color: var(--text-muted);
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+    white-space: nowrap;
+  }
+
+  .btn-sync.svelte-gjpmyc:hover:not(:disabled) {
+    background: var(--background-modifier-hover);
+    color: var(--text-normal);
+    border-color: var(--interactive-accent);
+  }
+
+  .btn-sync.svelte-gjpmyc:disabled {
+    cursor: default;
+    opacity: 0.7;
+  }
+
+  .btn-sync.ok.svelte-gjpmyc {
+    color: var(--color-green, #4caf50);
+    border-color: var(--color-green, #4caf50);
+  }
+
+  .btn-sync.error.svelte-gjpmyc {
+    color: var(--color-red, #e05252);
+    border-color: var(--color-red, #e05252);
+  }
+
+  .sync-icon.svelte-gjpmyc {
+    display: inline-block;
+  }
+
+  .sync-icon.spinning.svelte-gjpmyc {
+    animation: svelte-gjpmyc-spin 0.8s linear infinite;
   }
 
   @keyframes svelte-gjpmyc-spin {

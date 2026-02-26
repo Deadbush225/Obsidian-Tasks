@@ -4,6 +4,8 @@ import type { Project, Task, TaskStatus } from './types';
 import { loadProjects, createTaskNote, updateTaskField, archiveTask } from './taskUtils';
 import ProjectView from './components/ProjectView.svelte';
 import { mount, unmount } from 'svelte';
+import { GanttSyncService } from './syncService';
+import { SyncConflictModal } from './settings';
 
 export const GANTT_VIEW_TYPE = 'obsidian-gantt-view';
 
@@ -71,6 +73,7 @@ export class GanttView extends ItemView {
         onOpenTask: this.handleOpenTask.bind(this),
         onViewModeChange: (mode: 'gantt' | 'kanban') => { this.viewMode = mode; },
         onActiveProjectChange: (idx: number) => { this.activeProjectIndex = idx; },
+        onSync: this.handleSync.bind(this),
       },
     });
 
@@ -81,6 +84,26 @@ export class GanttView extends ItemView {
   private handleOpenTask(filePath: string) {
     const file = this.app.vault.getFileByPath(filePath);
     if (file) this.app.workspace.getLeaf(false).openFile(file);
+  }
+
+  /** Called by the Sync button in the toolbar. Throws on error so the component can show it. */
+  private async handleSync(): Promise<void> {
+    const { syncBaseUrl, syncEmail, syncPassword } = this.plugin.settings;
+    if (!syncBaseUrl || !syncEmail || !syncPassword) {
+      throw new Error('Configure sync credentials in Settings first.');
+    }
+    const svc = new GanttSyncService(syncBaseUrl, syncEmail, syncPassword);
+    await svc.login();
+    const result = await svc.syncAll(this.app, this.plugin.settings.projectsFolder);
+    if (result.conflictTasks.length > 0) {
+      new SyncConflictModal(
+        this.app,
+        this.plugin,
+        svc,
+        result.conflictTasks,
+        () => this.triggerComponentRefresh(),
+      ).open();
+    }
   }
 
   private async handleCreateTask(
