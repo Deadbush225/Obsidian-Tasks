@@ -342,27 +342,47 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
 
   @override
   Widget build(BuildContext context) {
+    final showTabs = _projectRoot != null && !_permissionDenied;
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Gantt Viewer', style: TextStyle(fontWeight: FontWeight.bold)),
+        toolbarHeight: 48,
+        titleSpacing: 12,
+        title: showTabs
+            ? Row(children: [
+                const Text('Gantt Viewer', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: TabBar(
+                    controller: _tabs,
+                    indicatorColor: const Color(0xFF7C6AF7),
+                    labelColor: const Color(0xFF7C6AF7),
+                    unselectedLabelColor: Colors.white38,
+                    indicatorSize: TabBarIndicatorSize.label,
+                    labelPadding: EdgeInsets.zero,
+                    tabs: const [
+                      Tab(icon: Icon(Icons.list, size: 18), height: 36),
+                      Tab(icon: Icon(Icons.view_column, size: 18), height: 36),
+                      Tab(icon: Icon(Icons.bar_chart, size: 18), height: 36),
+                    ],
+                  ),
+                ),
+              ])
+            : const Text('Gantt Viewer', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
         actions: [
-          IconButton(icon: const Icon(Icons.folder_open), tooltip: 'Change folder', onPressed: _pickFolder),
+          IconButton(
+            icon: const Icon(Icons.folder_open, size: 20),
+            tooltip: 'Change folder',
+            onPressed: _pickFolder,
+            visualDensity: VisualDensity.compact,
+          ),
           if (_projectRoot != null)
-            IconButton(icon: const Icon(Icons.refresh), tooltip: 'Refresh', onPressed: () => _refresh()),
+            IconButton(
+              icon: const Icon(Icons.refresh, size: 20),
+              tooltip: 'Refresh',
+              onPressed: () => _refresh(),
+              visualDensity: VisualDensity.compact,
+            ),
         ],
-        bottom: _projectRoot != null && !_permissionDenied
-            ? TabBar(
-                controller: _tabs,
-                indicatorColor: const Color(0xFF7C6AF7),
-                labelColor: const Color(0xFF7C6AF7),
-                unselectedLabelColor: Colors.white38,
-                tabs: const [
-                  Tab(icon: Icon(Icons.list), text: 'List'),
-                  Tab(icon: Icon(Icons.view_column), text: 'Kanban'),
-                  Tab(icon: Icon(Icons.bar_chart), text: 'Gantt'),
-                ],
-              )
-            : null,
       ),
       body: _buildBody(),
     );
