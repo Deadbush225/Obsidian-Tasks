@@ -42,13 +42,35 @@ class GanttApp extends StatelessWidget {
   }
 }
 
-// ─── Palette (same as Obsidian plugin) ────────────────────────────────────────
+// ─── Palette ─────────────────────────────────────────────────────────────────
 const List<Color> kPalette = [
   Color(0xFF7C6AF7), Color(0xFFF7926A), Color(0xFF6BBFF7),
   Color(0xFFF7C86A), Color(0xFF6AF79E), Color(0xFFF76A9E),
   Color(0xFF6AF7F0), Color(0xFFC86AF7), Color(0xFFF7F06A),
   Color(0xFF6A9EF7),
 ];
+
+const List<String> kStatuses   = ['todo', 'in-progress', 'blocked', 'done'];
+const List<String> kPriorities = ['low', 'medium', 'high', 'critical'];
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+String _fmtDate(DateTime d) =>
+    '${d.year}-${d.month.toString().padLeft(2,'0')}-${d.day.toString().padLeft(2,'0')}';
+
+DateTime? _parseDate(String? s) {
+  if (s == null || s.isEmpty) return null;
+  try {
+    final p = s.split('-');
+    return DateTime(int.parse(p[0]), int.parse(p[1]), int.parse(p[2]));
+  } catch (_) { return null; }
+}
+
+/// Returns today's date with time zeroed out — used for due-date comparisons
+/// so that a task due today is never treated as overdue.
+DateTime _today() {
+  final n = DateTime.now();
+  return DateTime(n.year, n.month, n.day);
+}
 
 // ─── Task model ───────────────────────────────────────────────────────────────
 class Task {
@@ -72,28 +94,34 @@ class Task {
     required this.colorIdx,
   });
 
+  Task copyWith({
+    String? title, String? status, String? priority,
+    String? startDate, String? endDate,
+    bool clearStartDate = false, bool clearEndDate = false,
+  }) => Task(
+    id: id,
+    title: title ?? this.title,
+    status: status ?? this.status,
+    priority: priority ?? this.priority,
+    startDate: clearStartDate ? null : (startDate ?? this.startDate),
+    endDate: clearEndDate ? null : (endDate ?? this.endDate),
+    filePath: filePath,
+    colorIdx: colorIdx,
+  );
+
   Color get color => kPalette[colorIdx % kPalette.length];
 
   bool get isOverdue {
-    if (endDate == null) return false;
-    try {
-      final parts = endDate!.split('-');
-      final due = DateTime(int.parse(parts[0]), int.parse(parts[1]), int.parse(parts[2]));
-      return due.isBefore(DateTime.now()) && status != 'done';
-    } catch (_) {
-      return false;
-    }
+    final due = _parseDate(endDate);
+    if (due == null) return false;
+    final today = _today();
+    return due.isBefore(today) && status != 'done';
   }
 
   int get daysUntilDue {
-    if (endDate == null) return 9999;
-    try {
-      final parts = endDate!.split('-');
-      final due = DateTime(int.parse(parts[0]), int.parse(parts[1]), int.parse(parts[2]));
-      return due.difference(DateTime.now()).inDays;
-    } catch (_) {
-      return 9999;
-    }
+    final due = _parseDate(endDate);
+    if (due == null) return 9999;
+    return due.difference(_today()).inDays;
   }
 
   Map<String, dynamic> toJson() => {
@@ -102,34 +130,66 @@ class Task {
   };
 }
 
+// ─── File I/O helpers ─────────────────────────────────────────────────────────
+
+/// Rewrite a single frontmatter field in a markdown file on disk.
+Future<void> _writeTaskField(String filePath, Map<String, String?> fields) async {
+  final file = File(filePath);
+  if (!await file.exists()) return;
+  var content = await file.readAsString();
+
+  for (final entry in fields.entries) {
+    final key = entry.key;
+    final val = entry.value;
+    final lineRx = RegExp('^$key\\s*:.*\$', multiLine: true);
+    if (val == null || val.isEmpty) {
+      content = content.replaceAll(lineRx, '');
+    } else if (lineRx.hasMatch(content)) {
+      content = content.replaceAll(lineRx, '$key: $val');
+    } else {
+      // Insert before closing ---
+      content = content.replaceFirst(RegExp(r'\n---'), '\n$key: $val\n---');
+    }
+  }
+  // Remove consecutive blank lines that might appear after deletion
+  content = content.replaceAll(RegExp(r'\n{3,}'), '\n\n');
+  await file.writeAsString(content);
+}
+
+/// Move a file into <root>/archive/, timestamping on collision.
+Future<void> _archiveFile(String filePath, String projectRoot) async {
+  final file = File(filePath);
+  if (!await file.exists()) return;
+  final archiveDir = Directory('$projectRoot/archive');
+  if (!await archiveDir.exists()) await archiveDir.create(recursive: true);
+  final name = filePath.split('/').last;
+  var dest = '${archiveDir.path}/$name';
+  if (await File(dest).exists()) {
+    dest = '${archiveDir.path}/${name.replaceAll('.md', '')}-${DateTime.now().millisecondsSinceEpoch}.md';
+  }
+  await file.rename(dest);
+}
+
 // ─── Markdown parser ──────────────────────────────────────────────────────────
 Task? parseMarkdownTask(String filePath, String content, int colorIdx) {
-  String? frontmatter;
   final fmMatch = RegExp(r'^---\r?\n([\s\S]*?)\r?\n---', multiLine: true).firstMatch(content);
-  if (fmMatch != null) frontmatter = fmMatch.group(1);
-  if (frontmatter == null) return null;
+  if (fmMatch == null) return null;
+  final fm = fmMatch.group(1)!;
 
-  String? _field(String key) {
-    final m = RegExp(r'^' + key + r'\s*:\s*(.+)$', multiLine: true).firstMatch(frontmatter!);
+  String? field(String key) {
+    final m = RegExp('^$key\\s*:\\s*(.+)\$', multiLine: true).firstMatch(fm);
     return m?.group(1)?.trim().replaceAll(RegExp("^[\"']|[\"']\$"), '');
   }
 
-  final title = _field('title') ?? filePath.split('/').last.replaceAll('.md', '');
-  final status = _field('status') ?? 'todo';
-  final priority = _field('priority') ?? 'medium';
-  final id = _field('id') ?? filePath.split('/').last.replaceAll('.md', '');
-  final startDate = _field('startDate') ?? _field('start_date') ?? _field('start');
-  final endDate = _field('endDate') ?? _field('end_date') ?? _field('due') ?? _field('end');
-
   return Task(
-    id: id,
-    title: title,
-    status: status,
-    priority: priority,
-    startDate: startDate,
-    endDate: endDate,
-    filePath: filePath,
-    colorIdx: colorIdx,
+    id:        field('id') ?? filePath.split('/').last.replaceAll('.md', ''),
+    title:     field('title') ?? filePath.split('/').last.replaceAll('.md', ''),
+    status:    field('status') ?? 'todo',
+    priority:  field('priority') ?? 'medium',
+    startDate: field('startDate') ?? field('start_date') ?? field('start'),
+    endDate:   field('endDate') ?? field('end_date') ?? field('due') ?? field('end'),
+    filePath:  filePath,
+    colorIdx:  colorIdx,
   );
 }
 
@@ -144,26 +204,18 @@ Future<List<Task>> scanProjectFolder(String rootPath) async {
     await for (final entry in d.list()) {
       if (entry is! File || !entry.path.endsWith('.md')) continue;
       try {
-        final content = await entry.readAsString();
-        final task = parseMarkdownTask(entry.path, content, colorIdx);
-        if (task != null) {
-          tasks.add(task);
-          colorIdx++;
-        }
+        final task = parseMarkdownTask(entry.path, await entry.readAsString(), colorIdx);
+        if (task != null) { tasks.add(task); colorIdx++; }
       } catch (_) {}
     }
   }
 
-  // Scan root-level .md files
   await scanDir(dir);
-
-  // Scan one level of subdirectories (skip archive)
   await for (final entry in dir.list()) {
     if (entry is! Directory) continue;
     if (entry.path.split('/').last == 'archive') continue;
     await scanDir(entry);
   }
-
   tasks.sort((a, b) => a.daysUntilDue.compareTo(b.daysUntilDue));
   return tasks;
 }
@@ -175,21 +227,24 @@ class HomePage extends StatefulWidget {
   State<HomePage> createState() => _HomePageState();
 }
 
-class _HomePageState extends State<HomePage> {
+class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin {
   String? _projectRoot;
   List<Task> _tasks = [];
   bool _loading = false;
   String _scanInfo = '';
-
   bool _permissionDenied = false;
+  late final TabController _tabs;
 
   @override
   void initState() {
     super.initState();
+    _tabs = TabController(length: 3, vsync: this);
     _checkPermissionThenLoad();
   }
 
-  /// Returns true if we have sufficient storage access.
+  @override
+  void dispose() { _tabs.dispose(); super.dispose(); }
+
   Future<bool> _hasStoragePermission() async {
     if (await Permission.manageExternalStorage.isGranted) return true;
     if (await Permission.storage.isGranted) return true;
@@ -197,67 +252,39 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _checkPermissionThenLoad() async {
-    if (await _hasStoragePermission()) {
-      setState(() => _permissionDenied = false);
-      _loadSavedRoot();
-      return;
-    }
-    // Try legacy READ_EXTERNAL_STORAGE first (works on Android ≤ 12 without Settings jump)
-    final storageStatus = await Permission.storage.request();
-    if (storageStatus.isGranted) {
-      setState(() => _permissionDenied = false);
-      _loadSavedRoot();
-      return;
-    }
-    // On Android 11+ MANAGE_EXTERNAL_STORAGE must be toggled in System Settings
+    if (await _hasStoragePermission()) { setState(() => _permissionDenied = false); _loadSavedRoot(); return; }
+    final s = await Permission.storage.request();
+    if (s.isGranted) { setState(() => _permissionDenied = false); _loadSavedRoot(); return; }
     setState(() => _permissionDenied = true);
   }
 
   Future<void> _openStorageSettings() async {
-    // Opens the exact "All files access" toggle page for this app on Android 11+
-    // Falls back to general app settings on older Android
     try {
-      await const MethodChannel('com.example.gantt_viewer/widget')
-          .invokeMethod('openAllFilesSettings');
-    } catch (_) {
-      await openAppSettings(); // last-resort fallback
-    }
+      await const MethodChannel('com.example.gantt_viewer/widget').invokeMethod('openAllFilesSettings');
+    } catch (_) { await openAppSettings(); }
   }
 
-  /// Called by the "I've granted it" button after user returns from Settings
   Future<void> _recheckPermission() async {
     if (await _hasStoragePermission()) {
       setState(() => _permissionDenied = false);
       _loadSavedRoot();
     } else {
       setState(() => _permissionDenied = true);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Storage permission still not granted. '
-              'Enable "Allow all files access" for this app in Settings.'),
-          duration: Duration(seconds: 4),
-        ),
-      );
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('Still no permission. Enable "Allow all files access" in Settings.'),
+      ));
     }
   }
 
   Future<void> _loadSavedRoot() async {
     final prefs = await SharedPreferences.getInstance();
     final saved = prefs.getString('project_root');
-    if (saved != null) {
-      setState(() => _projectRoot = saved);
-      await _refresh(saved);
-    }
+    if (saved != null) { setState(() => _projectRoot = saved); await _refresh(saved); }
   }
 
   Future<void> _pickFolder() async {
-    if (!await _hasStoragePermission()) {
-      await _openStorageSettings();
-      return;
-    }
-    final result = await FilePicker.platform.getDirectoryPath(
-      dialogTitle: 'Select your Obsidian projects folder',
-    );
+    if (!await _hasStoragePermission()) { await _openStorageSettings(); return; }
+    final result = await FilePicker.platform.getDirectoryPath(dialogTitle: 'Select Obsidian projects folder');
     if (result == null) return;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('project_root', result);
@@ -265,30 +292,52 @@ class _HomePageState extends State<HomePage> {
     await _refresh(result);
   }
 
-  Future<void> _refresh(String root) async {
+  Future<void> _refresh([String? root]) async {
+    final r = root ?? _projectRoot;
+    if (r == null) return;
     setState(() { _loading = true; _scanInfo = ''; });
-    final tasks = await scanProjectFolder(root);
+    final tasks = await scanProjectFolder(r);
     await _pushToWidget(tasks);
-    setState(() {
-      _tasks = tasks;
-      _loading = false;
-      _scanInfo = '${tasks.length} task(s) found';
-    });
+    setState(() { _tasks = tasks; _loading = false; _scanInfo = '${tasks.length} task(s)'; });
   }
 
   Future<void> _pushToWidget(List<Task> tasks) async {
-    // Encode top-10 tasks as JSON and store where the widget can read them.
-    // home_widget stores to FlutterSharedPreferences with a "flutter." prefix,
-    // which matches what GanttWidgetProvider reads.
     final limited = tasks.take(10).map((t) => t.toJson()).toList();
     await HomeWidget.saveWidgetData<String>('tasks_json', jsonEncode(limited));
     await HomeWidget.updateWidget(androidName: 'GanttWidgetProvider');
-    // Also trigger via MethodChannel so the widget refreshes immediately
-    // even when home_widget's broadcast hasn't fired yet.
-    try {
-      await const MethodChannel('com.example.gantt_viewer/widget')
-          .invokeMethod('updateWidget');
-    } catch (_) {}
+    try { await const MethodChannel('com.example.gantt_viewer/widget').invokeMethod('updateWidget'); } catch (_) {}
+  }
+
+  /// Persist changes to the markdown file and reload task in state.
+  Future<void> _saveTask(Task updated) async {
+    await _writeTaskField(updated.filePath, {
+      'title':     updated.title,
+      'status':    updated.status,
+      'priority':  updated.priority,
+      'startDate': updated.startDate ?? '',
+      'endDate':   updated.endDate ?? '',
+    });
+    await _refresh();
+  }
+
+  Future<void> _archiveTask(Task t) async {
+    if (_projectRoot == null) return;
+    await _archiveFile(t.filePath, _projectRoot!);
+    await _refresh();
+  }
+
+  void _openTaskSheet(Task t) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF1E1E2E),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => _TaskEditSheet(
+        task: t,
+        onSave: (updated) { Navigator.pop(context); _saveTask(updated); },
+        onArchive: () { Navigator.pop(context); _archiveTask(t); },
+      ),
+    );
   }
 
   @override
@@ -297,245 +346,684 @@ class _HomePageState extends State<HomePage> {
       appBar: AppBar(
         title: const Text('Gantt Viewer', style: TextStyle(fontWeight: FontWeight.bold)),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.folder_open),
-            tooltip: 'Change projects folder',
-            onPressed: _pickFolder,
-          ),
+          IconButton(icon: const Icon(Icons.folder_open), tooltip: 'Change folder', onPressed: _pickFolder),
           if (_projectRoot != null)
-            IconButton(
-              icon: const Icon(Icons.refresh),
-              tooltip: 'Refresh',
-              onPressed: () => _refresh(_projectRoot!),
-            ),
+            IconButton(icon: const Icon(Icons.refresh), tooltip: 'Refresh', onPressed: () => _refresh()),
         ],
+        bottom: _projectRoot != null && !_permissionDenied
+            ? TabBar(
+                controller: _tabs,
+                indicatorColor: const Color(0xFF7C6AF7),
+                labelColor: const Color(0xFF7C6AF7),
+                unselectedLabelColor: Colors.white38,
+                tabs: const [
+                  Tab(icon: Icon(Icons.list), text: 'List'),
+                  Tab(icon: Icon(Icons.view_column), text: 'Kanban'),
+                  Tab(icon: Icon(Icons.bar_chart), text: 'Gantt'),
+                ],
+              )
+            : null,
       ),
       body: _buildBody(),
     );
   }
 
   Widget _buildBody() {
-    // ── Permission gate ───────────────────────────────────────────────────────
-    if (_permissionDenied) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(32),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.lock, size: 72, color: Color(0xFFF7926A)),
-              const SizedBox(height: 20),
-              const Text('Storage permission required',
-                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 12),
-              const Text(
-                'On Android 11 and above, this app needs "All Files Access" to read your Obsidian vault.\n\n'
-                '1. Tap "Open Settings" below\n'
-                '2. Find this app and enable "Allow all files access"\n'
-                '3. Return here and tap "I\'ve granted it"',
-                textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.white70, height: 1.6),
-              ),
-              const SizedBox(height: 28),
-              FilledButton.icon(
-                onPressed: _openStorageSettings,
-                icon: const Icon(Icons.settings),
-                label: const Text('Open Settings'),
-              ),
-              const SizedBox(height: 12),
-              OutlinedButton.icon(
-                onPressed: _recheckPermission,
-                icon: const Icon(Icons.check_circle_outline),
-                label: const Text("I've granted it"),
-              ),
-            ],
-          ),
-        ),
-      );
-    }
+    if (_permissionDenied) return _PermissionGate(onOpenSettings: _openStorageSettings, onRecheck: _recheckPermission);
+    if (_projectRoot == null) return _FolderPicker(onPick: _pickFolder);
+    if (_loading) return const Center(child: CircularProgressIndicator());
 
-    if (_projectRoot == null) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.folder_open, size: 72, color: Color(0xFF7C6AF7)),
-            const SizedBox(height: 20),
-            const Text('No projects folder selected',
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            const Text('Tap the button below to choose your Obsidian projects folder',
-                textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.white54)),
-            const SizedBox(height: 28),
-            FilledButton.icon(
-              onPressed: _pickFolder,
-              icon: const Icon(Icons.folder_open),
-              label: const Text('Select folder'),
-            ),
-          ],
-        ),
-      );
-    }
-
-    if (_loading) {
-      return const Center(child: CircularProgressIndicator());
-    }
-
-    // ── Real task list ────────────────────────────────────────────────────────
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+    final body = TabBarView(
+      controller: _tabs,
       children: [
-        _FolderBanner(path: _projectRoot!),
-        if (_scanInfo.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
-            child: Text(_scanInfo,
-                style: const TextStyle(fontSize: 11, color: Color(0xFF7C6AF7))),
-          ),
-        Expanded(
-          child: RefreshIndicator(
-            onRefresh: () => _refresh(_projectRoot!),
-            child: _tasks.isEmpty
-                ? const Center(
-                    child: Text(
-                      'No tasks found\n\nMake sure your markdown files have\n---\ntitle: ...\nstatus: ...\n---\nfrontmatter.',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(color: Colors.white38, height: 1.6),
-                    ))
-                : ListView.builder(
-                    padding: const EdgeInsets.all(10),
-                    itemCount: _tasks.length,
-                    itemBuilder: (_, i) => _TaskCard(task: _tasks[i]),
-                  ),
-          ),
-        ),
+        _ListView(tasks: _tasks, projectRoot: _projectRoot!, scanInfo: _scanInfo, onTap: _openTaskSheet, onRefresh: _refresh),
+        _KanbanView(tasks: _tasks, onTap: _openTaskSheet),
+        _GanttView(tasks: _tasks, onTap: _openTaskSheet),
       ],
     );
+    return body;
   }
+}
+
+// ─── Permission gate ──────────────────────────────────────────────────────────
+class _PermissionGate extends StatelessWidget {
+  final VoidCallback onOpenSettings, onRecheck;
+  const _PermissionGate({required this.onOpenSettings, required this.onRecheck});
+  @override
+  Widget build(BuildContext context) => Center(
+    child: Padding(
+      padding: const EdgeInsets.all(32),
+      child: Column(mainAxisSize: MainAxisSize.min, children: [
+        const Icon(Icons.lock, size: 72, color: Color(0xFFF7926A)),
+        const SizedBox(height: 20),
+        const Text('Storage permission required', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 12),
+        const Text(
+          'On Android 11+, this app needs "All Files Access" to read your Obsidian vault.\n\n'
+          '1. Tap "Open Settings"\n2. Enable "Allow all files access"\n3. Return and tap "I\'ve granted it"',
+          textAlign: TextAlign.center, style: TextStyle(color: Colors.white70, height: 1.6)),
+        const SizedBox(height: 28),
+        FilledButton.icon(onPressed: onOpenSettings, icon: const Icon(Icons.settings), label: const Text('Open Settings')),
+        const SizedBox(height: 12),
+        OutlinedButton.icon(onPressed: onRecheck, icon: const Icon(Icons.check_circle_outline), label: const Text("I've granted it")),
+      ]),
+    ),
+  );
+}
+
+// ─── Folder picker splash ─────────────────────────────────────────────────────
+class _FolderPicker extends StatelessWidget {
+  final VoidCallback onPick;
+  const _FolderPicker({required this.onPick});
+  @override
+  Widget build(BuildContext context) => Center(
+    child: Column(mainAxisSize: MainAxisSize.min, children: [
+      const Icon(Icons.folder_open, size: 72, color: Color(0xFF7C6AF7)),
+      const SizedBox(height: 20),
+      const Text('No folder selected', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+      const SizedBox(height: 8),
+      const Text('Choose your Obsidian projects folder', style: TextStyle(color: Colors.white54)),
+      const SizedBox(height: 28),
+      FilledButton.icon(onPressed: onPick, icon: const Icon(Icons.folder_open), label: const Text('Select folder')),
+    ]),
+  );
 }
 
 // ─── Folder banner ────────────────────────────────────────────────────────────
 class _FolderBanner extends StatelessWidget {
   final String path;
-  const _FolderBanner({required this.path});
+  final String info;
+  const _FolderBanner({required this.path, this.info = ''});
+  @override
+  Widget build(BuildContext context) => Container(
+    width: double.infinity,
+    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+    color: const Color(0xFF13131F),
+    child: Row(children: [
+      const Icon(Icons.folder, color: Color(0xFF7C6AF7), size: 14),
+      const SizedBox(width: 6),
+      Expanded(child: Text(path, style: const TextStyle(fontSize: 11, color: Colors.white38), overflow: TextOverflow.ellipsis)),
+      if (info.isNotEmpty) Text(info, style: const TextStyle(fontSize: 11, color: Color(0xFF7C6AF7))),
+    ]),
+  );
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ─── LIST VIEW ───────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+class _ListView extends StatelessWidget {
+  final List<Task> tasks;
+  final String projectRoot, scanInfo;
+  final void Function(Task) onTap;
+  final Future<void> Function() onRefresh;
+  const _ListView({required this.tasks, required this.projectRoot, required this.scanInfo, required this.onTap, required this.onRefresh});
+
+  @override
+  Widget build(BuildContext context) => Column(children: [
+    _FolderBanner(path: projectRoot, info: scanInfo),
+    Expanded(
+      child: RefreshIndicator(
+        onRefresh: onRefresh,
+        child: tasks.isEmpty
+          ? const Center(child: Text('No tasks found\n\nFiles need --- frontmatter ---', textAlign: TextAlign.center, style: TextStyle(color: Colors.white38, height: 1.6)))
+          : ListView.builder(
+              padding: const EdgeInsets.all(10),
+              itemCount: tasks.length,
+              itemBuilder: (_, i) => _TaskCard(task: tasks[i], onTap: onTap)),
+      ),
+    ),
+  ]);
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ─── KANBAN VIEW ─────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+class _KanbanView extends StatelessWidget {
+  final List<Task> tasks;
+  final void Function(Task) onTap;
+  const _KanbanView({required this.tasks, required this.onTap});
+
   @override
   Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      color: const Color(0xFF13131F),
-      child: Row(
-        children: [
-          const Icon(Icons.folder, color: Color(0xFF7C6AF7), size: 16),
-          const SizedBox(width: 6),
-          Expanded(
-            child: Text(path,
-                style: const TextStyle(fontSize: 11, color: Colors.white38),
-                overflow: TextOverflow.ellipsis),
-          ),
-        ],
+    final cols = {for (final s in kStatuses) s: tasks.where((t) => t.status == s).toList()};
+    final labels = {'todo': '📋 To Do', 'in-progress': '🔄 In Progress', 'blocked': '🚫 Blocked', 'done': '✅ Done'};
+    final colors = {
+      'todo': Colors.white38, 'in-progress': const Color(0xFFFFCD5E),
+      'blocked': const Color(0xFFE84040), 'done': const Color(0xFF4CAF50),
+    };
+
+    return ListView(
+      scrollDirection: Axis.horizontal,
+      padding: const EdgeInsets.all(12),
+      children: kStatuses.map((s) {
+        final col = cols[s]!;
+        return Container(
+          width: 240,
+          margin: const EdgeInsets.only(right: 12),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: Row(children: [
+                Text(labels[s]!, style: TextStyle(fontWeight: FontWeight.bold, color: colors[s])),
+                const SizedBox(width: 6),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                  decoration: BoxDecoration(color: colors[s]!.withAlpha(40), borderRadius: BorderRadius.circular(10)),
+                  child: Text('${col.length}', style: TextStyle(fontSize: 11, color: colors[s])),
+                ),
+              ]),
+            ),
+            Expanded(
+              child: ListView.builder(
+                itemCount: col.length,
+                itemBuilder: (_, i) => _KanbanCard(task: col[i], onTap: onTap),
+              ),
+            ),
+          ]),
+        );
+      }).toList(),
+    );
+  }
+}
+
+class _KanbanCard extends StatelessWidget {
+  final Task task;
+  final void Function(Task) onTap;
+  const _KanbanCard({required this.task, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final priorityColor = {
+      'low': const Color(0xFF6BB6FF), 'medium': const Color(0xFFFFCD5E),
+      'high': const Color(0xFFF7926A), 'critical': const Color(0xFFE84040),
+    }[task.priority] ?? Colors.white38;
+
+    return GestureDetector(
+      onTap: () => onTap(task),
+      child: Card(
+        margin: const EdgeInsets.only(bottom: 8),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(children: [
+              Container(width: 8, height: 8, decoration: BoxDecoration(color: task.color, shape: BoxShape.circle)),
+              const SizedBox(width: 6),
+              Expanded(child: Text(task.title, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13))),
+              _Badge(label: task.priority.toUpperCase(), color: priorityColor),
+            ]),
+            if (task.endDate != null) ...[
+              const SizedBox(height: 6),
+              _DueBadge(task: task),
+            ],
+          ]),
+        ),
       ),
     );
   }
 }
 
-// ─── Task card ────────────────────────────────────────────────────────────────
-class _TaskCard extends StatelessWidget {
-  final Task task;
-  const _TaskCard({required this.task});
+// ══════════════════════════════════════════════════════════════════════════════
+// ─── GANTT VIEW ──────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+class _GanttView extends StatefulWidget {
+  final List<Task> tasks;
+  final void Function(Task) onTap;
+  const _GanttView({required this.tasks, required this.onTap});
+  @override
+  State<_GanttView> createState() => _GanttViewState();
+}
+
+class _GanttViewState extends State<_GanttView> {
+  static const double kDayW = 28.0;
+  static const double kRowH = 40.0;
+  static const double kLabelW = 160.0;
+  static const double kHeaderH = 56.0;
+
+  final _scrollCtrl = ScrollController();
+
+  late DateTime _start;
+  late DateTime _end;
+  late int _days;
+
+  @override
+  void initState() {
+    super.initState();
+    _computeRange();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _scrollToToday());
+  }
+
+  @override
+  void didUpdateWidget(_GanttView old) {
+    super.didUpdateWidget(old);
+    _computeRange();
+  }
+
+  void _computeRange() {
+    final now = DateTime.now();
+    DateTime earliest = now.subtract(const Duration(days: 14));
+    DateTime latest   = now.add(const Duration(days: 60));
+    for (final t in widget.tasks) {
+      final s = _parseDate(t.startDate);
+      final e = _parseDate(t.endDate);
+      if (s != null && s.isBefore(earliest)) earliest = s.subtract(const Duration(days: 3));
+      if (e != null && e.isAfter(latest))    latest   = e.add(const Duration(days: 3));
+    }
+    _start = DateTime(earliest.year, earliest.month, earliest.day);
+    _end   = DateTime(latest.year, latest.month, latest.day);
+    _days  = _end.difference(_start).inDays + 1;
+  }
+
+  void _scrollToToday() {
+    final offset = DateTime.now().difference(_start).inDays * kDayW - 80.0;
+    if (_scrollCtrl.hasClients) _scrollCtrl.jumpTo(offset.clamp(0, _scrollCtrl.position.maxScrollExtent));
+  }
 
   @override
   Widget build(BuildContext context) {
-    final overdue = task.isOverdue;
-    final days = task.daysUntilDue;
-
-    String dueBadge = '';
-    Color dueColor = Colors.white54;
-    if (task.endDate != null) {
-      if (overdue) {
-        dueBadge = 'Overdue ${(-days).abs()}d';
-        dueColor = const Color(0xFFE84040);
-      } else if (days == 0) {
-        dueBadge = 'Due today';
-        dueColor = const Color(0xFFFFCD5E);
-      } else if (days <= 3) {
-        dueBadge = 'Due in ${days}d';
-        dueColor = const Color(0xFFF7926A);
-      } else {
-        dueBadge = '🗓 ${task.endDate}';
-        dueColor = Colors.white38;
-      }
+    if (widget.tasks.isEmpty) {
+      return const Center(child: Text('No tasks to display', style: TextStyle(color: Colors.white38)));
     }
 
-    final statusColor = {
-      'todo': Colors.white38,
-      'in-progress': const Color(0xFFFFCD5E),
-      'blocked': const Color(0xFFE84040),
-      'done': const Color(0xFF4CAF50),
-    }[task.status] ?? Colors.white38;
+    // Build month header spans
+    final months = <({String label, int span})>[];
+    DateTime cursor = _start;
+    while (!cursor.isAfter(_end)) {
+      final label = _monthLabel(cursor);
+      int span = 0;
+      while (!cursor.isAfter(_end) && _monthLabel(cursor) == label) { span++; cursor = cursor.add(const Duration(days: 1)); }
+      months.add((label: label, span: span));
+    }
 
-    final priorityColor = {
-      'low': const Color(0xFF6BB6FF),
-      'medium': const Color(0xFFFFCD5E),
-      'high': const Color(0xFFF7926A),
-      'critical': const Color(0xFFE84040),
-    }[task.priority] ?? Colors.white38;
-
-    return Card(
-      margin: const EdgeInsets.symmetric(vertical: 5),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-      child: IntrinsicHeight(
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // Accent bar
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // ── Left label column ─────────────────────────────────────────────────
+        SizedBox(
+          width: kLabelW,
+          child: Column(children: [
+            // Header spacer matching the Gantt header height
             Container(
-              width: 4,
-              decoration: BoxDecoration(
-                color: task.color,
-                borderRadius: const BorderRadius.only(
-                  topLeft: Radius.circular(10),
-                  bottomLeft: Radius.circular(10),
-                ),
+              height: kHeaderH,
+              alignment: Alignment.centerLeft,
+              padding: const EdgeInsets.only(left: 12),
+              decoration: const BoxDecoration(
+                color: Color(0xFF13131F),
+                border: Border(bottom: BorderSide(color: Color(0xFF2E2E3E))),
               ),
+              child: const Text('Tasks', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.white54, fontSize: 13)),
             ),
-            Expanded(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: Text(task.title,
-                              style: const TextStyle(
-                                  fontWeight: FontWeight.w600, fontSize: 15)),
+            // Task labels
+            ...widget.tasks.map((t) => GestureDetector(
+              onTap: () => widget.onTap(t),
+              child: Container(
+                height: kRowH,
+                padding: const EdgeInsets.symmetric(horizontal: 10),
+                decoration: const BoxDecoration(border: Border(bottom: BorderSide(color: Color(0xFF2E2E3E)))),
+                child: Row(children: [
+                  Container(width: 6, height: 6, decoration: BoxDecoration(color: t.color, shape: BoxShape.circle)),
+                  const SizedBox(width: 6),
+                  Expanded(child: Text(t.title, style: const TextStyle(fontSize: 12), overflow: TextOverflow.ellipsis)),
+                ]),
+              ),
+            )),
+          ]),
+        ),
+
+        // ── Right scrollable grid ─────────────────────────────────────────────
+        Expanded(
+          child: SingleChildScrollView(
+            controller: _scrollCtrl,
+            scrollDirection: Axis.horizontal,
+            child: SizedBox(
+              width: _days * kDayW,
+              child: Column(children: [
+                // Month + day header
+                SizedBox(
+                  height: kHeaderH,
+                  child: Stack(children: [
+                    // Month labels row (top 26px)
+                    Positioned(
+                      top: 0, left: 0, right: 0, height: 26,
+                      child: Row(children: months.map((m) => Container(
+                        width: m.span * kDayW,
+                        alignment: Alignment.center,
+                        decoration: const BoxDecoration(
+                          color: Color(0xFF13131F),
+                          border: Border(right: BorderSide(color: Color(0xFF2E2E3E))),
                         ),
-                        _Badge(label: task.priority.toUpperCase(), color: priorityColor),
-                      ],
+                        child: Text(m.label, style: const TextStyle(fontSize: 10, color: Colors.white54, fontWeight: FontWeight.bold)),
+                      )).toList()),
                     ),
-                    const SizedBox(height: 6),
-                    Row(
-                      children: [
-                        _StatusChip(status: task.status, color: statusColor),
-                        const SizedBox(width: 8),
-                        if (task.endDate != null)
-                          Text(dueBadge,
-                              style: TextStyle(fontSize: 12, color: dueColor,
-                                  fontWeight: overdue || days <= 3
-                                      ? FontWeight.bold : FontWeight.normal)),
-                      ],
+                    // Day numbers row (bottom 30px)
+                    Positioned(
+                      top: 26, left: 0, right: 0, bottom: 0,
+                      child: Row(children: List.generate(_days, (i) {
+                        final d = _start.add(Duration(days: i));
+                        final isToday = _sameDay(d, DateTime.now());
+                        return Container(
+                          width: kDayW,
+                          alignment: Alignment.center,
+                          decoration: BoxDecoration(
+                            color: isToday ? const Color(0xFF7C6AF7).withAlpha(40) : const Color(0xFF13131F),
+                            border: const Border(right: BorderSide(color: Color(0xFF2E2E3E))),
+                          ),
+                          child: Text(
+                            '${d.day}',
+                            style: TextStyle(fontSize: 9, color: isToday ? const Color(0xFF7C6AF7) : Colors.white38),
+                          ),
+                        );
+                      })),
+                    ),
+                  ]),
+                ),
+
+                // Task bars
+                ...widget.tasks.map((t) {
+                  final start = _parseDate(t.startDate) ?? _parseDate(t.endDate);
+                  final end   = _parseDate(t.endDate) ?? _parseDate(t.startDate);
+                  return SizedBox(
+                    height: kRowH,
+                    child: Stack(children: [
+                      // Today line
+                      Positioned(
+                        left: DateTime.now().difference(_start).inDays * kDayW + kDayW / 2,
+                        top: 0, bottom: 0, width: 1,
+                        child: Container(color: const Color(0xFF7C6AF7).withAlpha(80)),
+                      ),
+                      // Grid lines
+                      Row(children: List.generate(_days, (i) => Container(
+                        width: kDayW,
+                        decoration: const BoxDecoration(border: Border(right: BorderSide(color: Color(0xFF2E2E3E)))),
+                      ))),
+                      // Bar
+                      if (start != null && end != null)
+                        Positioned(
+                          left:  start.difference(_start).inDays * kDayW + 2,
+                          top:   8,
+                          height: kRowH - 16,
+                          width: (end.difference(start).inDays + 1) * kDayW - 4,
+                          child: GestureDetector(
+                            onTap: () => widget.onTap(t),
+                            child: Container(
+                              decoration: BoxDecoration(
+                                color: t.color.withAlpha(200),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              alignment: Alignment.centerLeft,
+                              padding: const EdgeInsets.symmetric(horizontal: 6),
+                              child: Text(t.title,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(fontSize: 10, color: Colors.white, fontWeight: FontWeight.w600)),
+                            ),
+                          ),
+                        ),
+                    ]),
+                  );
+                }),
+              ]),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  String _monthLabel(DateTime d) => ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.month - 1] + ' ${d.year}';
+  bool _sameDay(DateTime a, DateTime b) => a.year == b.year && a.month == b.month && a.day == b.day;
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ─── TASK EDIT BOTTOM SHEET ──────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+class _TaskEditSheet extends StatefulWidget {
+  final Task task;
+  final void Function(Task) onSave;
+  final VoidCallback onArchive;
+  const _TaskEditSheet({required this.task, required this.onSave, required this.onArchive});
+  @override
+  State<_TaskEditSheet> createState() => _TaskEditSheetState();
+}
+
+class _TaskEditSheetState extends State<_TaskEditSheet> {
+  late TextEditingController _titleCtrl;
+  late String _status, _priority;
+  DateTime? _startDate, _endDate;
+  String? _dateError;
+
+  @override
+  void initState() {
+    super.initState();
+    _titleCtrl = TextEditingController(text: widget.task.title);
+    _status    = widget.task.status;
+    _priority  = widget.task.priority;
+    _startDate = _parseDate(widget.task.startDate);
+    _endDate   = _parseDate(widget.task.endDate);
+  }
+
+  @override
+  void dispose() { _titleCtrl.dispose(); super.dispose(); }
+
+  /// Validate that end >= start, returns true if valid.
+  bool _validateDates() {
+    if (_startDate != null && _endDate != null && _endDate!.isBefore(_startDate!)) {
+      setState(() => _dateError = 'End date must be after start date');
+      return false;
+    }
+    setState(() => _dateError = null);
+    return true;
+  }
+
+  Future<void> _pickDate(bool isStart) async {
+    final initial = (isStart ? _startDate : _endDate) ?? DateTime.now();
+    final first   = isStart ? DateTime(2000) : (_startDate ?? DateTime(2000));
+    final picked  = await showDatePicker(
+      context: context,
+      initialDate: initial,
+      firstDate: first,
+      lastDate: DateTime(2100),
+      builder: (ctx, child) => Theme(
+        data: ThemeData.dark().copyWith(colorScheme: const ColorScheme.dark(primary: Color(0xFF7C6AF7))),
+        child: child!,
+      ),
+    );
+    if (picked == null) return;
+    setState(() {
+      if (isStart) {
+        _startDate = picked;
+        // Auto-push end date if it's now before start
+        if (_endDate != null && _endDate!.isBefore(picked)) _endDate = picked;
+      } else {
+        _endDate = picked;
+      }
+    });
+    _validateDates();
+  }
+
+  void _save() {
+    if (!_validateDates()) return;
+    widget.onSave(widget.task.copyWith(
+      title:     _titleCtrl.text.trim().isEmpty ? null : _titleCtrl.text.trim(),
+      status:    _status,
+      priority:  _priority,
+      startDate: _startDate != null ? _fmtDate(_startDate!) : null,
+      endDate:   _endDate   != null ? _fmtDate(_endDate!)   : null,
+      clearStartDate: _startDate == null,
+      clearEndDate:   _endDate   == null,
+    ));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final priorityColors = {
+      'low': const Color(0xFF6BB6FF), 'medium': const Color(0xFFFFCD5E),
+      'high': const Color(0xFFF7926A), 'critical': const Color(0xFFE84040),
+    };
+    final statusColors = {
+      'todo': Colors.white38, 'in-progress': const Color(0xFFFFCD5E),
+      'blocked': const Color(0xFFE84040), 'done': const Color(0xFF4CAF50),
+    };
+    final statusLabels = {'todo': '📋 To Do', 'in-progress': '🔄 In Progress', 'blocked': '🚫 Blocked', 'done': '✅ Done'};
+
+    return Padding(
+      padding: EdgeInsets.only(
+        left: 20, right: 20, top: 20,
+        bottom: MediaQuery.of(context).viewInsets.bottom + 20,
+      ),
+      child: SingleChildScrollView(
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+          // Title bar
+          Row(children: [
+            Container(width: 4, height: 24, decoration: BoxDecoration(color: widget.task.color, borderRadius: BorderRadius.circular(2))),
+            const SizedBox(width: 10),
+            const Text('Edit Task', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            const Spacer(),
+            IconButton(
+              icon: const Icon(Icons.archive_outlined, color: Color(0xFFF7926A)),
+              tooltip: 'Archive',
+              onPressed: () => showDialog(
+                context: context,
+                builder: (_) => AlertDialog(
+                  backgroundColor: const Color(0xFF1E1E2E),
+                  title: const Text('Archive task?'),
+                  content: Text('Move "${widget.task.title}" to archive?'),
+                  actions: [
+                    TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+                    FilledButton(
+                      style: FilledButton.styleFrom(backgroundColor: const Color(0xFFF7926A)),
+                      onPressed: () { Navigator.pop(context); widget.onArchive(); },
+                      child: const Text('Archive'),
                     ),
                   ],
                 ),
               ),
             ),
+          ]),
+          const SizedBox(height: 16),
+
+          // Title field
+          TextField(
+            controller: _titleCtrl,
+            style: const TextStyle(fontSize: 15),
+            decoration: InputDecoration(
+              labelText: 'Title',
+              filled: true, fillColor: const Color(0xFF252535),
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
+            ),
+          ),
+          const SizedBox(height: 14),
+
+          // Status chips
+          const Text('Status', style: TextStyle(fontSize: 12, color: Colors.white54)),
+          const SizedBox(height: 6),
+          Wrap(spacing: 8, children: kStatuses.map((s) => ChoiceChip(
+            label: Text(statusLabels[s]!),
+            selected: _status == s,
+            selectedColor: statusColors[s]!.withAlpha(60),
+            labelStyle: TextStyle(color: _status == s ? statusColors[s] : Colors.white54, fontSize: 12),
+            onSelected: (_) => setState(() => _status = s),
+          )).toList()),
+          const SizedBox(height: 14),
+
+          // Priority chips
+          const Text('Priority', style: TextStyle(fontSize: 12, color: Colors.white54)),
+          const SizedBox(height: 6),
+          Wrap(spacing: 8, children: kPriorities.map((p) => ChoiceChip(
+            label: Text(p.toUpperCase()),
+            selected: _priority == p,
+            selectedColor: priorityColors[p]!.withAlpha(60),
+            labelStyle: TextStyle(color: _priority == p ? priorityColors[p] : Colors.white54, fontSize: 12),
+            onSelected: (_) => setState(() => _priority = p),
+          )).toList()),
+          const SizedBox(height: 14),
+
+          // Date pickers
+          const Text('Dates', style: TextStyle(fontSize: 12, color: Colors.white54)),
+          const SizedBox(height: 6),
+          Row(children: [
+            Expanded(child: _DateButton(
+              label: 'Start',
+              date: _startDate,
+              onTap: () => _pickDate(true),
+              onClear: () => setState(() { _startDate = null; _validateDates(); }),
+            )),
+            const SizedBox(width: 10),
+            Expanded(child: _DateButton(
+              label: 'End / Due',
+              date: _endDate,
+              onTap: () => _pickDate(false),
+              onClear: () => setState(() { _endDate = null; _validateDates(); }),
+            )),
+          ]),
+          if (_dateError != null) ...[
+            const SizedBox(height: 6),
+            Row(children: [
+              const Icon(Icons.error_outline, color: Color(0xFFE84040), size: 14),
+              const SizedBox(width: 4),
+              Text(_dateError!, style: const TextStyle(color: Color(0xFFE84040), fontSize: 12)),
+            ]),
           ],
-        ),
+          const SizedBox(height: 20),
+
+          // Save button
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              onPressed: _save,
+              icon: const Icon(Icons.save),
+              label: const Text('Save changes'),
+            ),
+          ),
+        ]),
       ),
     );
+  }
+}
+
+class _DateButton extends StatelessWidget {
+  final String label;
+  final DateTime? date;
+  final VoidCallback onTap, onClear;
+  const _DateButton({required this.label, required this.date, required this.onTap, required this.onClear});
+
+  @override
+  Widget build(BuildContext context) => InkWell(
+    onTap: onTap,
+    borderRadius: BorderRadius.circular(10),
+    child: Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(color: const Color(0xFF252535), borderRadius: BorderRadius.circular(10)),
+      child: Row(children: [
+        const Icon(Icons.calendar_today, size: 14, color: Color(0xFF7C6AF7)),
+        const SizedBox(width: 6),
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(label, style: const TextStyle(fontSize: 10, color: Colors.white38)),
+          Text(date != null ? _fmtDate(date!) : 'Not set',
+              style: TextStyle(fontSize: 12, color: date != null ? Colors.white : Colors.white38)),
+        ])),
+        if (date != null) GestureDetector(
+          onTap: onClear,
+          child: const Icon(Icons.close, size: 14, color: Colors.white38),
+        ),
+      ]),
+    ),
+  );
+}
+
+// ─── Shared small widgets ─────────────────────────────────────────────────────
+class _DueBadge extends StatelessWidget {
+  final Task task;
+  const _DueBadge({required this.task});
+  @override
+  Widget build(BuildContext context) {
+    final days = task.daysUntilDue;
+    final overdue = task.isOverdue;
+    String text; Color color;
+    if (overdue)      { text = 'Overdue ${(-days).abs()}d'; color = const Color(0xFFE84040); }
+    else if (days==0) { text = 'Due today';                 color = const Color(0xFFFFCD5E); }
+    else if (days<=3) { text = 'Due in ${days}d';           color = const Color(0xFFF7926A); }
+    else              { text = '🗓 ${task.endDate}';        color = Colors.white38; }
+    return Text(text, style: TextStyle(fontSize: 11, color: color, fontWeight: overdue || days<=3 ? FontWeight.bold : FontWeight.normal));
   }
 }
 
@@ -544,118 +1032,65 @@ class _Badge extends StatelessWidget {
   final Color color;
   const _Badge({required this.label, required this.color});
   @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-      decoration: BoxDecoration(
-        color: color.withAlpha(40),
-        borderRadius: BorderRadius.circular(4),
-        border: Border.all(color: color.withAlpha(100)),
-      ),
-      child: Text(label, style: TextStyle(color: color, fontSize: 10, fontWeight: FontWeight.bold)),
-    );
-  }
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+    decoration: BoxDecoration(
+      color: color.withAlpha(40), borderRadius: BorderRadius.circular(4),
+      border: Border.all(color: color.withAlpha(100)),
+    ),
+    child: Text(label, style: TextStyle(color: color, fontSize: 9, fontWeight: FontWeight.bold)),
+  );
 }
 
-class _StatusChip extends StatelessWidget {
-  final String status;
-  final Color color;
-  const _StatusChip({required this.status, required this.color});
-  @override
-  Widget build(BuildContext context) {
-    final labels = {
-      'todo': '📋 To Do',
-      'in-progress': '🔄 In Progress',
-      'blocked': '🚫 Blocked',
-      'done': '✅ Done',
-    };
-    return Text(labels[status] ?? status,
-        style: TextStyle(fontSize: 12, color: color));
-  }
-}
-
-
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
-
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
-  final String title;
-
-  @override
-  State<MyHomePage> createState() => _MyHomePageState();
-}
-
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
-
-  void _incrementCounter() {
-    setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
-    });
-  }
+// ─── Task card (List view) ────────────────────────────────────────────────────
+class _TaskCard extends StatelessWidget {
+  final Task task;
+  final void Function(Task) onTap;
+  const _TaskCard({required this.task, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
-    return Scaffold(
-      appBar: AppBar(
-        // TRY THIS: Try changing the color here to a specific color (to
-        // Colors.amber, perhaps?) and trigger a hot reload to see the AppBar
-        // change color while the other colors stay the same.
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
-      ),
-      body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
-        child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          //
-          // TRY THIS: Invoke "debug painting" (choose the "Toggle Debug Paint"
-          // action in the IDE, or press "p" in the console), to see the
-          // wireframe for each widget.
-          mainAxisAlignment: .center,
-          children: [
-            const Text('You have pushed the button this many times:'),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
-            ),
-          ],
+    final priorityColor = {
+      'low': const Color(0xFF6BB6FF), 'medium': const Color(0xFFFFCD5E),
+      'high': const Color(0xFFF7926A), 'critical': const Color(0xFFE84040),
+    }[task.priority] ?? Colors.white38;
+    final statusColor = {
+      'todo': Colors.white38, 'in-progress': const Color(0xFFFFCD5E),
+      'blocked': const Color(0xFFE84040), 'done': const Color(0xFF4CAF50),
+    }[task.status] ?? Colors.white38;
+    final statusLabel = {'todo': '📋 To Do', 'in-progress': '🔄 In Progress', 'blocked': '🚫 Blocked', 'done': '✅ Done'}[task.status] ?? task.status;
+
+    return Card(
+      margin: const EdgeInsets.symmetric(vertical: 5),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      child: InkWell(
+        onTap: () => onTap(task),
+        borderRadius: BorderRadius.circular(10),
+        child: IntrinsicHeight(
+          child: Row(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            Container(width: 4, decoration: BoxDecoration(
+              color: task.color,
+              borderRadius: const BorderRadius.only(topLeft: Radius.circular(10), bottomLeft: Radius.circular(10)),
+            )),
+            Expanded(child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Row(children: [
+                  Expanded(child: Text(task.title, style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 15))),
+                  _Badge(label: task.priority.toUpperCase(), color: priorityColor),
+                ]),
+                const SizedBox(height: 6),
+                Row(children: [
+                  Text(statusLabel, style: TextStyle(fontSize: 12, color: statusColor)),
+                  const SizedBox(width: 8),
+                  if (task.endDate != null) _DueBadge(task: task),
+                ]),
+              ]),
+            )),
+            const Padding(padding: EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+              child: Icon(Icons.chevron_right, color: Colors.white24, size: 18)),
+          ]),
         ),
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
       ),
     );
   }
