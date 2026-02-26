@@ -17,6 +17,7 @@ export function generateTaskFrontmatter(task: Partial<Task>): string {
     `assignee: ${task.assignee ?? ''}`,
     `tags: [${(task.tags ?? []).join(', ')}]`,
     `parent_id: ${task.parentId ?? ''}`,
+    `updated_at: ${task.updatedAt ?? Date.now()}`,
     '---',
     '',
     `# ${task.title ?? 'Untitled Task'}`,
@@ -61,6 +62,7 @@ export function parseTaskFile(file: TFile, content: string, projectFolder: strin
     projectFolder,
     subtasks: [],
     parentId: get('parent_id') || null,
+    updatedAt: parseInt(get('updated_at'), 10) || 0,
   };
 }
 

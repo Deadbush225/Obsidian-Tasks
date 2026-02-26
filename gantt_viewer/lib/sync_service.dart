@@ -15,12 +15,20 @@ class SyncResult {
   final int pushed;
   final int pulled;
   final List<SyncConflict> conflicts;
+  /// Tasks pulled from the server that should be written/updated locally.
+  /// Each map contains the same fields as the server's task JSON (camelCase).
+  final List<Map<String, dynamic>> pulledTasks;
+  /// IDs of tasks that have been archived (soft-deleted) on the server.
+  /// Callers should delete the matching local .md files.
+  final List<String> archivedIds;
   final String? error;
 
   const SyncResult({
     this.pushed = 0,
     this.pulled = 0,
     this.conflicts = const [],
+    this.pulledTasks = const [],
+    this.archivedIds = const [],
     this.error,
   });
 
@@ -190,11 +198,14 @@ class SyncService {
     } catch (_) {}
 
     return SyncResult(
-      pushed:    pushed,
-      pulled:    pulled,
-      conflicts: conflicts,
-      // embed pulled tasks in conflicts list with a special marker so caller
-      // can iterate once; callers check SyncResult.pulledTasks
+      pushed:      pushed,
+      pulled:      pulled,
+      conflicts:   conflicts,
+      pulledTasks: serverTasks.where((t) => !(t['isArchived'] as bool? ?? false)).toList(),
+      archivedIds: serverTasks
+          .where((t) => t['isArchived'] as bool? ?? false)
+          .map((t) => t['id'] as String)
+          .toList(),
     );
   }
 
@@ -258,4 +269,67 @@ class SyncService {
   }
 
   static Future<bool> get hasToken async => (await _token()) != null;
+
+  // ── Account creation (signup) ──────────────────────────────────────────────
+
+  /// Register a new account.  Returns null on success, error string on failure.
+  static Future<String?> register({
+    required String baseUrl,
+    required String email,
+    required String password,
+    required String firstName,
+    required String lastName,
+  }) async {
+    final url = baseUrl.endsWith('/')
+        ? baseUrl.substring(0, baseUrl.length - 1)
+        : baseUrl;
+    try {
+      final res = await http.post(
+        Uri.parse('$url/auth/register'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'email': email,
+          'password': password,
+          'first_name': firstName,
+          'last_name': lastName,
+        }),
+      ).timeout(const Duration(seconds: 15));
+      final body = jsonDecode(res.body) as Map<String, dynamic>;
+      if (res.statusCode == 200 || res.statusCode == 201) return null; // success
+      return body['msg'] ?? 'Registration failed (${res.statusCode})';
+    } catch (ex) {
+      return ex.toString();
+    }
+  }
+
+  /// Verify email with OTP code after registration.
+  /// On success, logs in automatically and caches the token.
+  static Future<String?> verifyOtp({
+    required String baseUrl,
+    required String email,
+    required String otp,
+  }) async {
+    final url = baseUrl.endsWith('/')
+        ? baseUrl.substring(0, baseUrl.length - 1)
+        : baseUrl;
+    try {
+      final res = await http.post(
+        Uri.parse('$url/auth/verify-otp'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'email': email, 'otp': otp, 'purpose': 'register'}),
+      ).timeout(const Duration(seconds: 15));
+      final body = jsonDecode(res.body) as Map<String, dynamic>;
+      if (res.statusCode == 200 && body['token'] != null) {
+        // cache token + credentials for future syncs
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString(_prefKeyToken,   body['token']);
+        await prefs.setString(_prefKeyBaseUrl, url);
+        await prefs.setString(_prefKeyEmail,   email);
+        return null; // success
+      }
+      return body['msg'] ?? 'OTP verification failed (${res.statusCode})';
+    } catch (ex) {
+      return ex.toString();
+    }
+  }
 }

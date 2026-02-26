@@ -84,6 +84,8 @@ class Task {
   final String? endDate;
   final String filePath;
   final int colorIdx;
+  /// Unix milliseconds — used for conflict resolution (last-write-wins).
+  final int updatedAt;
 
   const Task({
     required this.id,
@@ -94,12 +96,14 @@ class Task {
     this.endDate,
     required this.filePath,
     required this.colorIdx,
+    this.updatedAt = 0,
   });
 
   Task copyWith({
     String? title, String? status, String? priority,
     String? startDate, String? endDate,
     bool clearStartDate = false, bool clearEndDate = false,
+    int? updatedAt,
   }) => Task(
     id: id,
     title: title ?? this.title,
@@ -109,6 +113,7 @@ class Task {
     endDate: clearEndDate ? null : (endDate ?? this.endDate),
     filePath: filePath,
     colorIdx: colorIdx,
+    updatedAt: updatedAt ?? this.updatedAt,
   );
 
   Color get color => kPalette[colorIdx % kPalette.length];
@@ -129,18 +134,66 @@ class Task {
   Map<String, dynamic> toJson() => {
     'id': id, 'title': title, 'status': status, 'priority': priority,
     'startDate': startDate, 'endDate': endDate, 'colorIdx': colorIdx,
+    'updatedAt': updatedAt,
   };
 }
 
 // ─── File I/O helpers ─────────────────────────────────────────────────────────
 
+/// Generate a short random alphanumeric ID (12 chars), similar to nanoid.
+String _nanoid([int len = 12]) {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  final rand = StringBuffer();
+  for (var i = 0; i < len; i++) {
+    rand.write(chars[(DateTime.now().microsecondsSinceEpoch + i * 7919) % chars.length]);
+  }
+  return rand.toString();
+}
+
+/// Build a YAML frontmatter markdown file for a new task.
+String _buildFrontmatter({
+  required String id,
+  required String title,
+  required String status,
+  required String priority,
+  String? startDate,
+  String? endDate,
+  int? updatedAt,
+}) {
+  final ts = updatedAt ?? DateTime.now().millisecondsSinceEpoch;
+  return '''---
+id: $id
+title: $title
+status: $status
+priority: $priority
+startDate: ${startDate ?? ''}
+endDate: ${endDate ?? ''}
+updated_at: $ts
+---
+
+# $title
+
+## Description
+
+## Notes
+''';
+}
+
 /// Rewrite a single frontmatter field in a markdown file on disk.
+/// Always bumps `updated_at` to the current time so the file's timestamp
+/// is fresh and conflict resolution works correctly on next push.
 Future<void> _writeTaskField(String filePath, Map<String, String?> fields) async {
   final file = File(filePath);
   if (!await file.exists()) return;
   var content = await file.readAsString();
 
-  for (final entry in fields.entries) {
+  // Always stamp updated_at with current time when any field changes
+  final allFields = {
+    ...fields,
+    'updated_at': DateTime.now().millisecondsSinceEpoch.toString(),
+  };
+
+  for (final entry in allFields.entries) {
     final key = entry.key;
     final val = entry.value;
     final lineRx = RegExp('^$key\\s*:.*\$', multiLine: true);
@@ -192,6 +245,7 @@ Task? parseMarkdownTask(String filePath, String content, int colorIdx) {
     endDate:   field('endDate') ?? field('end_date') ?? field('due') ?? field('end'),
     filePath:  filePath,
     colorIdx:  colorIdx,
+    updatedAt: int.tryParse(field('updated_at') ?? '') ?? 0,
   );
 }
 
@@ -322,8 +376,8 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
 
     final payload = _tasks.map((t) => {
       ...t.toJson(),
-      // updated_at must be set — use file mtime or current time if missing
-      'updatedAt': DateTime.now().millisecondsSinceEpoch,
+      // Use the real updatedAt from the file; fall back to now only if missing
+      'updatedAt': t.updatedAt > 0 ? t.updatedAt : DateTime.now().millisecondsSinceEpoch,
     }).toList();
 
     final result = await SyncService.sync(payload);
@@ -334,12 +388,79 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       return;
     }
 
+    // Apply pulled tasks (server is authoritative for these)
+    if (result.pulledTasks.isNotEmpty || result.archivedIds.isNotEmpty) {
+      await _applyPulledTasks(result.pulledTasks, result.archivedIds);
+    }
+
+    // Refresh local state after applying remote changes
+    await _refresh();
+
+    if (!mounted) return;
     setState(() {
       _syncStatus = _SyncStatus.ok;
       _syncInfo = '↑${result.pushed} ↓${result.pulled}';
     });
 
     if (result.hasConflicts) _showConflictDialog(result.conflicts);
+  }
+
+  /// Write server-side tasks to local .md files and delete archived ones.
+  /// For each pulled task, if a matching local file exists and server is newer,
+  /// update it; otherwise create a new file in the project root.
+  Future<void> _applyPulledTasks(
+    List<Map<String, dynamic>> pulled,
+    List<String> archivedIds,
+  ) async {
+    if (_projectRoot == null) return;
+
+    // Build id → filePath map from current local tasks
+    final localById = { for (final t in _tasks) t.id: t };
+
+    // Delete archived tasks
+    for (final id in archivedIds) {
+      final local = localById[id];
+      if (local != null) {
+        final f = File(local.filePath);
+        if (await f.exists()) await f.delete();
+      }
+    }
+
+    // Write / update pulled tasks
+    for (final rt in pulled) {
+      final id           = rt['id'] as String? ?? '';
+      final serverTs     = (rt['updatedAt'] as int?) ?? 0;
+      final title        = rt['title'] as String? ?? id;
+      final status       = rt['status'] as String? ?? 'todo';
+      final priority     = rt['priority'] as String? ?? 'medium';
+      final startDate    = rt['startDate'] as String?;
+      final endDate      = rt['endDate'] as String?;
+
+      final local = localById[id];
+
+      if (local != null) {
+        // Only overwrite if server is strictly newer
+        if (serverTs <= local.updatedAt) continue;
+        await _writeTaskField(local.filePath, {
+          'title':      title,
+          'status':     status,
+          'priority':   priority,
+          'startDate':  startDate ?? '',
+          'endDate':    endDate ?? '',
+          'updated_at': serverTs.toString(),
+        });
+      } else {
+        // New task from server — create a local file
+        final safeName = title.replaceAll(RegExp(r'[\\/:*?"<>|]'), '-');
+        final filePath = '$_projectRoot/$safeName.md';
+        final content  = _buildFrontmatter(
+          id: id, title: title, status: status, priority: priority,
+          startDate: startDate, endDate: endDate,
+          updatedAt: serverTs,
+        );
+        await File(filePath).writeAsString(content);
+      }
+    }
   }
 
   void _showConflictDialog(List<SyncConflict> conflicts) {
@@ -372,7 +493,11 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () {
+              Navigator.pop(context);
+              // Force-push local versions so the server (and other clients) adopt ours
+              _keepMineConflicts(conflicts);
+            },
             child: const Text('Keep mine'),
           ),
           FilledButton(
@@ -394,21 +519,50 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       // Find matching local task by id
       final local = _tasks.where((t) => t.id == c.serverTask['id']).firstOrNull;
       if (local == null) continue;
-      final updated = local.copyWith(
-        title:    c.serverTask['title'],
-        status:   c.serverTask['status'],
-        priority: c.serverTask['priority'],
-        startDate: c.serverTask['startDate'],
-        endDate:   c.serverTask['endDate'],
-      );
-      await _writeTaskField(updated.filePath, {
-        'title':     updated.title,
-        'status':    updated.status,
-        'priority':  updated.priority,
-        'startDate': updated.startDate ?? '',
-        'endDate':   updated.endDate ?? '',
+      // Write server fields AND stamp the server's updatedAt so future pushes
+      // carry the correct timestamp and won't get overwritten again.
+      final serverTs = (c.serverTask['updatedAt'] as int?)?.toString()
+          ?? DateTime.now().millisecondsSinceEpoch.toString();
+      await _writeTaskField(local.filePath, {
+        'title':      c.serverTask['title'] as String? ?? local.title,
+        'status':     c.serverTask['status'] as String? ?? local.status,
+        'priority':   c.serverTask['priority'] as String? ?? local.priority,
+        'startDate':  (c.serverTask['startDate'] as String?) ?? local.startDate ?? '',
+        'endDate':    (c.serverTask['endDate'] as String?) ?? local.endDate ?? '',
+        'updated_at': serverTs,
       });
     }
+    await _refresh();
+  }
+
+  /// Force-push local versions of conflicting tasks so the server (and all
+  /// other clients like the Obsidian plugin) adopt the Flutter user's version.
+  ///
+  /// Strategy: bump each task's `updated_at` to `serverTs + 1` so it is
+  /// strictly newer than the server copy, guaranteeing the push wins.
+  Future<void> _keepMineConflicts(List<SyncConflict> conflicts) async {
+    if (!await SyncService.isConfigured) return;
+
+    for (final c in conflicts) {
+      final local = _tasks.where((t) => t.id == c.serverTask['id']).firstOrNull;
+      if (local == null) continue;
+
+      // Use serverTs + 1 so our timestamp beats the server's current value
+      final serverTs    = (c.serverTask['updatedAt'] as int?) ?? 0;
+      final winningTs   = serverTs + 1;
+
+      // Persist the winning timestamp to the local file
+      await _writeTaskField(local.filePath, {
+        'updated_at': winningTs.toString(),
+      });
+
+      // Force-push with the winning timestamp — server will overwrite its copy
+      await SyncService.pushOne({
+        ...local.toJson(),
+        'updatedAt': winningTs,
+      });
+    }
+
     await _refresh();
   }
 
@@ -426,19 +580,21 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
 
   /// Persist changes to the markdown file and reload task in state.
   Future<void> _saveTask(Task updated) async {
+    final now = DateTime.now().millisecondsSinceEpoch;
     await _writeTaskField(updated.filePath, {
-      'title':     updated.title,
-      'status':    updated.status,
-      'priority':  updated.priority,
-      'startDate': updated.startDate ?? '',
-      'endDate':   updated.endDate ?? '',
+      'title':      updated.title,
+      'status':     updated.status,
+      'priority':   updated.priority,
+      'startDate':  updated.startDate ?? '',
+      'endDate':    updated.endDate ?? '',
+      'updated_at': now.toString(),   // explicit ts so file and push stay in sync
     });
     await _refresh();
     // Push the single changed task immediately if sync is configured
     if (await SyncService.isConfigured) {
       SyncService.pushOne({
         ...updated.toJson(),
-        'updatedAt': DateTime.now().millisecondsSinceEpoch,
+        'updatedAt': now,
       });
     }
   }
@@ -462,6 +618,60 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         task: t,
         onSave: (updated) { Navigator.pop(context); _saveTask(updated); },
         onArchive: () { Navigator.pop(context); _archiveTask(t); },
+      ),
+    );
+  }
+
+  /// Create a brand-new markdown task file in the project root.
+  Future<void> _createTask({
+    required String title,
+    required String status,
+    required String priority,
+    String? startDate,
+    String? endDate,
+  }) async {
+    if (_projectRoot == null) return;
+    final id       = _nanoid();
+    final safeName = title.replaceAll(RegExp(r'[\\/:*?"<>|]'), '-');
+    final filePath = '$_projectRoot/$safeName.md';
+    final now      = DateTime.now().millisecondsSinceEpoch;
+    final content  = _buildFrontmatter(
+      id: id, title: title, status: status, priority: priority,
+      startDate: startDate, endDate: endDate,
+      updatedAt: now,
+    );
+    await File(filePath).writeAsString(content);
+    await _refresh();
+    if (await SyncService.isConfigured) {
+      SyncService.pushOne({
+        'id': id, 'title': title, 'status': status, 'priority': priority,
+        'startDate': startDate, 'endDate': endDate,
+        'rawFrontmatter': content,
+        'updatedAt': now,
+      });
+    }
+  }
+
+  void _openNewTaskSheet() {
+    if (_projectRoot == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Select a project folder first')),
+      );
+      return;
+    }
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF1E1E2E),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => _NewTaskSheet(
+        onCreate: (title, status, priority, start, end) {
+          Navigator.pop(context);
+          _createTask(
+            title: title, status: status, priority: priority,
+            startDate: start, endDate: end,
+          );
+        },
       ),
     );
   }
@@ -524,6 +734,14 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         ],
       ),
       body: _buildBody(),
+      floatingActionButton: _projectRoot != null && !_permissionDenied
+          ? FloatingActionButton(
+              onPressed: _openNewTaskSheet,
+              backgroundColor: const Color(0xFF7C6AF7),
+              tooltip: 'New task',
+              child: const Icon(Icons.add),
+            )
+          : null,
     );
   }
 
@@ -1256,6 +1474,179 @@ class _TaskCard extends StatelessWidget {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// ─── NEW TASK SHEET ──────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+
+class _NewTaskSheet extends StatefulWidget {
+  /// Called with (title, status, priority, startDate?, endDate?)
+  final void Function(String, String, String, String?, String?) onCreate;
+  const _NewTaskSheet({required this.onCreate});
+  @override
+  State<_NewTaskSheet> createState() => _NewTaskSheetState();
+}
+
+class _NewTaskSheetState extends State<_NewTaskSheet> {
+  final _titleCtrl = TextEditingController();
+  String _status   = 'todo';
+  String _priority = 'medium';
+  DateTime? _startDate, _endDate;
+  String? _error;
+
+  @override
+  void dispose() { _titleCtrl.dispose(); super.dispose(); }
+
+  Future<void> _pickDate(bool isStart) async {
+    final initial = (isStart ? _startDate : _endDate) ?? DateTime.now();
+    final first   = isStart ? DateTime(2000) : (_startDate ?? DateTime(2000));
+    final picked  = await showDatePicker(
+      context: context,
+      initialDate: initial,
+      firstDate: first,
+      lastDate: DateTime(2100),
+      builder: (ctx, child) => Theme(
+        data: ThemeData.dark().copyWith(colorScheme: const ColorScheme.dark(primary: Color(0xFF7C6AF7))),
+        child: child!,
+      ),
+    );
+    if (picked == null) return;
+    setState(() {
+      if (isStart) {
+        _startDate = picked;
+        if (_endDate != null && _endDate!.isBefore(picked)) _endDate = picked;
+      } else {
+        _endDate = picked;
+      }
+    });
+  }
+
+  void _submit() {
+    final title = _titleCtrl.text.trim();
+    if (title.isEmpty) {
+      setState(() => _error = 'Title is required');
+      return;
+    }
+    if (_startDate != null && _endDate != null && _endDate!.isBefore(_startDate!)) {
+      setState(() => _error = 'End date must be after start date');
+      return;
+    }
+    widget.onCreate(
+      title, _status, _priority,
+      _startDate != null ? _fmtDate(_startDate!) : null,
+      _endDate   != null ? _fmtDate(_endDate!)   : null,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final priorityColors = {
+      'low': const Color(0xFF6BB6FF), 'medium': const Color(0xFFFFCD5E),
+      'high': const Color(0xFFF7926A), 'critical': const Color(0xFFE84040),
+    };
+    final statusColors = {
+      'todo': Colors.white38, 'in-progress': const Color(0xFFFFCD5E),
+      'blocked': const Color(0xFFE84040), 'done': const Color(0xFF4CAF50),
+    };
+    final statusLabels = {
+      'todo': '📋 To Do', 'in-progress': '🔄 In Progress',
+      'blocked': '🚫 Blocked', 'done': '✅ Done',
+    };
+
+    return Padding(
+      padding: EdgeInsets.only(
+        left: 20, right: 20, top: 20,
+        bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+      ),
+      child: SingleChildScrollView(
+        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          // Header
+          Row(children: [
+            const Icon(Icons.add_task, color: Color(0xFF7C6AF7)),
+            const SizedBox(width: 10),
+            const Text('New Task', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            const Spacer(),
+            IconButton(
+              icon: const Icon(Icons.close),
+              onPressed: () => Navigator.pop(context),
+              visualDensity: VisualDensity.compact,
+            ),
+          ]),
+          const SizedBox(height: 14),
+
+          // Title
+          TextField(
+            controller: _titleCtrl,
+            autofocus: true,
+            style: const TextStyle(fontSize: 15),
+            textCapitalization: TextCapitalization.sentences,
+            decoration: InputDecoration(
+              labelText: 'Task title *',
+              filled: true, fillColor: const Color(0xFF252535),
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
+              errorText: _error,
+            ),
+            onSubmitted: (_) => _submit(),
+          ),
+          const SizedBox(height: 14),
+
+          // Status
+          const Text('Status', style: TextStyle(fontSize: 12, color: Colors.white54)),
+          const SizedBox(height: 6),
+          Wrap(spacing: 8, children: kStatuses.map((s) => ChoiceChip(
+            label: Text(statusLabels[s]!),
+            selected: _status == s,
+            selectedColor: (statusColors[s]!).withAlpha(60),
+            labelStyle: TextStyle(color: _status == s ? statusColors[s] : Colors.white54, fontSize: 12),
+            onSelected: (_) => setState(() => _status = s),
+          )).toList()),
+          const SizedBox(height: 14),
+
+          // Priority
+          const Text('Priority', style: TextStyle(fontSize: 12, color: Colors.white54)),
+          const SizedBox(height: 6),
+          Wrap(spacing: 8, children: kPriorities.map((p) => ChoiceChip(
+            label: Text(p.toUpperCase()),
+            selected: _priority == p,
+            selectedColor: priorityColors[p]!.withAlpha(60),
+            labelStyle: TextStyle(color: _priority == p ? priorityColors[p] : Colors.white54, fontSize: 12),
+            onSelected: (_) => setState(() => _priority = p),
+          )).toList()),
+          const SizedBox(height: 14),
+
+          // Dates
+          const Text('Dates', style: TextStyle(fontSize: 12, color: Colors.white54)),
+          const SizedBox(height: 6),
+          Row(children: [
+            Expanded(child: _DateButton(
+              label: 'Start',
+              date: _startDate,
+              onTap: () => _pickDate(true),
+              onClear: () => setState(() => _startDate = null),
+            )),
+            const SizedBox(width: 10),
+            Expanded(child: _DateButton(
+              label: 'End / Due',
+              date: _endDate,
+              onTap: () => _pickDate(false),
+              onClear: () => setState(() => _endDate = null),
+            )),
+          ]),
+          const SizedBox(height: 20),
+
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              onPressed: _submit,
+              icon: const Icon(Icons.add),
+              label: const Text('Create task'),
+            ),
+          ),
+        ]),
+      ),
+    );
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // ─── SYNC UI ─────────────────────────────────────────────────────────────────
 // ══════════════════════════════════════════════════════════════════════════════
 
@@ -1314,6 +1705,10 @@ class _SyncButton extends StatelessWidget {
 }
 
 /// Bottom-sheet for configuring the sync server URL + credentials.
+/// Supports three modes: login, register (with OTP verification step), and
+/// a quick "change URL / re-login" mode when credentials already exist.
+enum _AuthMode { login, register }
+
 class _SyncSetupSheet extends StatefulWidget {
   final VoidCallback onSaved;
   const _SyncSetupSheet({required this.onSaved});
@@ -1322,12 +1717,22 @@ class _SyncSetupSheet extends StatefulWidget {
 }
 
 class _SyncSetupSheetState extends State<_SyncSetupSheet> {
+  // ── shared ──────────────────────────────────────────────────────────────────
   final _urlCtrl   = TextEditingController();
   final _emailCtrl = TextEditingController();
   final _passCtrl  = TextEditingController();
   bool _obscure    = true;
-  bool _saving     = false;
+  bool _busy       = false;
   String? _error;
+  _AuthMode _mode  = _AuthMode.login;
+
+  // ── register-only ────────────────────────────────────────────────────────────
+  final _firstNameCtrl = TextEditingController();
+  final _lastNameCtrl  = TextEditingController();
+
+  // ── OTP verification step ─────────────────────────────────────────────────
+  bool _waitingForOtp = false;
+  final _otpCtrl      = TextEditingController();
 
   @override
   void initState() {
@@ -1337,6 +1742,7 @@ class _SyncSetupSheetState extends State<_SyncSetupSheet> {
 
   Future<void> _loadSaved() async {
     final creds = await SyncService.savedCredentials();
+    if (!mounted) return;
     setState(() {
       _urlCtrl.text   = creds.baseUrl;
       _emailCtrl.text = creds.email;
@@ -1348,33 +1754,64 @@ class _SyncSetupSheetState extends State<_SyncSetupSheet> {
     _urlCtrl.dispose();
     _emailCtrl.dispose();
     _passCtrl.dispose();
+    _firstNameCtrl.dispose();
+    _lastNameCtrl.dispose();
+    _otpCtrl.dispose();
     super.dispose();
   }
 
-  Future<void> _save() async {
+  // ── Login ──────────────────────────────────────────────────────────────────
+  Future<void> _doLogin() async {
     final url   = _urlCtrl.text.trim();
     final email = _emailCtrl.text.trim();
     final pass  = _passCtrl.text;
-
     if (url.isEmpty || email.isEmpty || pass.isEmpty) {
-      setState(() => _error = 'All fields are required');
-      return;
+      setState(() => _error = 'All fields are required'); return;
     }
-
-    setState(() { _saving = true; _error = null; });
-
+    setState(() { _busy = true; _error = null; });
     await SyncService.configure(baseUrl: url, email: email, password: pass);
     final err = await SyncService.login(email: email, password: pass);
-
     if (!mounted) return;
-    if (err != null) {
-      setState(() { _saving = false; _error = err; });
-      return;
-    }
-
+    if (err != null) { setState(() { _busy = false; _error = err; }); return; }
     widget.onSaved();
   }
 
+  // ── Register → OTP flow ────────────────────────────────────────────────────
+  Future<void> _doRegister() async {
+    final url   = _urlCtrl.text.trim();
+    final email = _emailCtrl.text.trim();
+    final pass  = _passCtrl.text;
+    final first = _firstNameCtrl.text.trim();
+    final last  = _lastNameCtrl.text.trim();
+    if (url.isEmpty || email.isEmpty || pass.isEmpty || first.isEmpty || last.isEmpty) {
+      setState(() => _error = 'All fields are required'); return;
+    }
+    setState(() { _busy = true; _error = null; });
+    final err = await SyncService.register(
+      baseUrl: url, email: email, password: pass,
+      firstName: first, lastName: last,
+    );
+    if (!mounted) return;
+    if (err != null) { setState(() { _busy = false; _error = err; }); return; }
+    // Success → move to OTP step
+    setState(() { _busy = false; _waitingForOtp = true; });
+  }
+
+  Future<void> _doVerifyOtp() async {
+    final url   = _urlCtrl.text.trim();
+    final email = _emailCtrl.text.trim();
+    final otp   = _otpCtrl.text.trim();
+    if (otp.isEmpty) { setState(() => _error = 'Enter the OTP from your email'); return; }
+    setState(() { _busy = true; _error = null; });
+    final err = await SyncService.verifyOtp(baseUrl: url, email: email, otp: otp);
+    if (!mounted) return;
+    if (err != null) { setState(() { _busy = false; _error = err; }); return; }
+    // verifyOtp caches the token, now store password for future re-logins
+    await SyncService.configure(baseUrl: url, email: email, password: _passCtrl.text);
+    widget.onSaved();
+  }
+
+  // ── Build ──────────────────────────────────────────────────────────────────
   @override
   Widget build(BuildContext context) {
     return Padding(
@@ -1384,10 +1821,15 @@ class _SyncSetupSheetState extends State<_SyncSetupSheet> {
       ),
       child: SingleChildScrollView(
         child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          // ── Header ──────────────────────────────────────────────────────────
           Row(children: [
             const Icon(Icons.cloud_sync, color: Color(0xFF7C6AF7)),
             const SizedBox(width: 10),
-            const Text('Cloud Sync Setup', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            Text(
+              _waitingForOtp ? 'Verify your email'
+                  : _mode == _AuthMode.register ? 'Create account' : 'Cloud Sync Setup',
+              style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
             const Spacer(),
             IconButton(
               icon: const Icon(Icons.close),
@@ -1396,30 +1838,70 @@ class _SyncSetupSheetState extends State<_SyncSetupSheet> {
             ),
           ]),
           const SizedBox(height: 4),
-          const Text(
-            'Enter your HelioHost backend URL and account credentials.',
-            style: TextStyle(fontSize: 12, color: Colors.white54),
+          Text(
+            _waitingForOtp
+                ? 'Enter the 6-digit code sent to ${_emailCtrl.text}.'
+                : _mode == _AuthMode.register
+                    ? 'Create a new account on your sync server.'
+                    : 'Enter your sync server URL and credentials.',
+            style: const TextStyle(fontSize: 12, color: Colors.white54),
           ),
           const SizedBox(height: 16),
-          _field(_urlCtrl,   'Server URL',
-              hint: 'https://yourname.heliohost.us/gantt/backend'),
-          const SizedBox(height: 10),
-          _field(_emailCtrl, 'Email', hint: 'you@example.com'),
-          const SizedBox(height: 10),
-          TextField(
-            controller: _passCtrl,
-            obscureText: _obscure,
-            style: const TextStyle(fontSize: 14),
-            decoration: InputDecoration(
-              labelText: 'Password',
-              filled: true, fillColor: const Color(0xFF252535),
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
-              suffixIcon: IconButton(
-                icon: Icon(_obscure ? Icons.visibility_off : Icons.visibility, size: 18),
-                onPressed: () => setState(() => _obscure = !_obscure),
+
+          if (!_waitingForOtp) ...[
+            // ── Server URL ───────────────────────────────────────────────────
+            _field(_urlCtrl, 'Server URL',
+                hint: 'https://yourname.heliohost.us/gantt/backend'),
+            const SizedBox(height: 10),
+
+            // ── Register-only extra fields ───────────────────────────────────
+            if (_mode == _AuthMode.register) ...[
+              Row(children: [
+                Expanded(child: _field(_firstNameCtrl, 'First name')),
+                const SizedBox(width: 10),
+                Expanded(child: _field(_lastNameCtrl, 'Last name')),
+              ]),
+              const SizedBox(height: 10),
+            ],
+
+            // ── Email & password ─────────────────────────────────────────────
+            _field(_emailCtrl, 'Email', hint: 'you@example.com'),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _passCtrl,
+              obscureText: _obscure,
+              style: const TextStyle(fontSize: 14),
+              decoration: InputDecoration(
+                labelText: 'Password',
+                filled: true, fillColor: const Color(0xFF252535),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
+                suffixIcon: IconButton(
+                  icon: Icon(_obscure ? Icons.visibility_off : Icons.visibility, size: 18),
+                  onPressed: () => setState(() => _obscure = !_obscure),
+                ),
               ),
             ),
-          ),
+          ] else ...[
+            // ── OTP field ────────────────────────────────────────────────────
+            TextField(
+              controller: _otpCtrl,
+              autofocus: true,
+              keyboardType: TextInputType.number,
+              maxLength: 6,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 24, letterSpacing: 8),
+              decoration: InputDecoration(
+                hintText: '000000',
+                hintStyle: const TextStyle(color: Colors.white24),
+                counterText: '',
+                filled: true, fillColor: const Color(0xFF252535),
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
+              ),
+              onSubmitted: (_) => _doVerifyOtp(),
+            ),
+          ],
+
+          // ── Error ──────────────────────────────────────────────────────────
           if (_error != null) ...[
             const SizedBox(height: 8),
             Row(children: [
@@ -1429,18 +1911,44 @@ class _SyncSetupSheetState extends State<_SyncSetupSheet> {
             ]),
           ],
           const SizedBox(height: 20),
+
+          // ── Primary action button ──────────────────────────────────────────
           SizedBox(
             width: double.infinity,
             child: FilledButton.icon(
-              onPressed: _saving ? null : _save,
-              icon: _saving
+              onPressed: _busy ? null : () {
+                if (_waitingForOtp)              _doVerifyOtp();
+                else if (_mode == _AuthMode.register) _doRegister();
+                else                             _doLogin();
+              },
+              icon: _busy
                   ? const SizedBox(width: 16, height: 16,
                       child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                  : const Icon(Icons.login),
-              label: Text(_saving ? 'Connecting…' : 'Connect & sync'),
+                  : Icon(_waitingForOtp ? Icons.check_circle_outline
+                        : _mode == _AuthMode.register ? Icons.person_add : Icons.login),
+              label: Text(_busy ? 'Please wait…'
+                  : _waitingForOtp ? 'Verify & sign in'
+                  : _mode == _AuthMode.register ? 'Create account' : 'Connect & sync'),
             ),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 10),
+
+          // ── Mode toggle ────────────────────────────────────────────────────
+          if (!_waitingForOtp)
+            Center(
+              child: TextButton(
+                onPressed: () => setState(() {
+                  _mode  = _mode == _AuthMode.login ? _AuthMode.register : _AuthMode.login;
+                  _error = null;
+                }),
+                child: Text(
+                  _mode == _AuthMode.login ? "Don't have an account? Sign up" : 'Already have an account? Log in',
+                  style: const TextStyle(fontSize: 12, color: Color(0xFF7C6AF7)),
+                ),
+              ),
+            ),
+
+          // ── Disconnect ────────────────────────────────────────────────────
           Center(
             child: TextButton(
               onPressed: () async {

@@ -26,6 +26,7 @@ export interface Task {
   projectFolder: string;
   subtasks: Subtask[];
   parentId: string | null;
+  updatedAt: number;          // unix milliseconds — used for conflict resolution
 }
 
 export interface Project {
@@ -38,10 +39,16 @@ export interface GanttPluginSettings {
   projectsFolder: string;
   defaultStatus: TaskStatus;
   defaultPriority: TaskPriority;
+  syncBaseUrl: string;
+  syncEmail: string;
+  syncPassword: string;
 }
 
 export const DEFAULT_SETTINGS: GanttPluginSettings = {
   projectsFolder: 'Projects',
   defaultStatus: 'todo',
   defaultPriority: 'medium',
+  syncBaseUrl: '',
+  syncEmail: '',
+  syncPassword: '',
 };
