@@ -1,0 +1,19 @@
+RewriteEngine On
+RewriteBase /cargolist/backend/
+
+# FIX: Force Authorization Header to be visible to PHP
+RewriteCond %{HTTP:Authorization} ^(.*)
+RewriteRule .* - [e=HTTP_AUTHORIZATION:%1]
+
+# Security Block (Keep your existing rules here)
+RewriteRule "(^|/)\.(?!well-known)" - [F]
+
+# 2. SECURITY FIX: Force "uploads" folder to go through index.php
+#    This makes sure your PHP Auth & CORS logic actually runs for images.
+RewriteRule ^uploads/(.*)$ index.php [QSA,L]
+
+# 3. Standard Routing (For everything else)
+#    If the file exists (like css, js, or favicon), serve it directly.
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^(.+)$ index.php [QSA,L]

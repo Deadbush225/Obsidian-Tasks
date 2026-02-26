@@ -8,6 +8,8 @@ import 'package:home_widget/home_widget.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'sync_service.dart';
+
 // ─── Entry point ─────────────────────────────────────────────────────────────
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -235,6 +237,10 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   bool _permissionDenied = false;
   late final TabController _tabs;
 
+  // Sync state
+  _SyncStatus _syncStatus = _SyncStatus.idle;
+  String _syncInfo = '';
+
   @override
   void initState() {
     super.initState();
@@ -308,6 +314,116 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
     try { await const MethodChannel('com.example.gantt_viewer/widget').invokeMethod('updateWidget'); } catch (_) {}
   }
 
+  // ── Cloud sync ──────────────────────────────────────────────────────────────
+
+  Future<void> _syncToCloud() async {
+    if (!await SyncService.isConfigured) return;
+    setState(() { _syncStatus = _SyncStatus.syncing; _syncInfo = ''; });
+
+    final payload = _tasks.map((t) => {
+      ...t.toJson(),
+      // updated_at must be set — use file mtime or current time if missing
+      'updatedAt': DateTime.now().millisecondsSinceEpoch,
+    }).toList();
+
+    final result = await SyncService.sync(payload);
+
+    if (!mounted) return;
+    if (!result.ok) {
+      setState(() { _syncStatus = _SyncStatus.error; _syncInfo = result.error!; });
+      return;
+    }
+
+    setState(() {
+      _syncStatus = _SyncStatus.ok;
+      _syncInfo = '↑${result.pushed} ↓${result.pulled}';
+    });
+
+    if (result.hasConflicts) _showConflictDialog(result.conflicts);
+  }
+
+  void _showConflictDialog(List<SyncConflict> conflicts) {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E2E),
+        title: Row(children: [
+          const Icon(Icons.sync_problem, color: Color(0xFFF7926A)),
+          const SizedBox(width: 8),
+          Text('${conflicts.length} sync conflict${conflicts.length > 1 ? 's' : ''}'),
+        ]),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const Text('The server has newer versions of these tasks. '
+                'Accept server versions?',
+                style: TextStyle(color: Colors.white70)),
+            const SizedBox(height: 12),
+            ...conflicts.map((c) => Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: Row(children: [
+                const Icon(Icons.circle, size: 6, color: Color(0xFFF7926A)),
+                const SizedBox(width: 8),
+                Expanded(child: Text(c.serverTask['title'] ?? c.serverTask['id'] ?? '?',
+                    style: const TextStyle(fontSize: 13))),
+              ]),
+            )),
+          ]),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Keep mine'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: const Color(0xFF7C6AF7)),
+            onPressed: () {
+              Navigator.pop(context);
+              // Apply server versions to local markdown files
+              _applyServerConflicts(conflicts);
+            },
+            child: const Text('Accept server'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _applyServerConflicts(List<SyncConflict> conflicts) async {
+    for (final c in conflicts) {
+      // Find matching local task by id
+      final local = _tasks.where((t) => t.id == c.serverTask['id']).firstOrNull;
+      if (local == null) continue;
+      final updated = local.copyWith(
+        title:    c.serverTask['title'],
+        status:   c.serverTask['status'],
+        priority: c.serverTask['priority'],
+        startDate: c.serverTask['startDate'],
+        endDate:   c.serverTask['endDate'],
+      );
+      await _writeTaskField(updated.filePath, {
+        'title':     updated.title,
+        'status':    updated.status,
+        'priority':  updated.priority,
+        'startDate': updated.startDate ?? '',
+        'endDate':   updated.endDate ?? '',
+      });
+    }
+    await _refresh();
+  }
+
+  void _openSyncSetup() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF1E1E2E),
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => _SyncSetupSheet(
+        onSaved: () { Navigator.pop(context); _syncToCloud(); },
+      ),
+    );
+  }
+
   /// Persist changes to the markdown file and reload task in state.
   Future<void> _saveTask(Task updated) async {
     await _writeTaskField(updated.filePath, {
@@ -318,12 +434,22 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       'endDate':   updated.endDate ?? '',
     });
     await _refresh();
+    // Push the single changed task immediately if sync is configured
+    if (await SyncService.isConfigured) {
+      SyncService.pushOne({
+        ...updated.toJson(),
+        'updatedAt': DateTime.now().millisecondsSinceEpoch,
+      });
+    }
   }
 
   Future<void> _archiveTask(Task t) async {
     if (_projectRoot == null) return;
     await _archiveFile(t.filePath, _projectRoot!);
     await _refresh();
+    if (await SyncService.isConfigured) {
+      SyncService.archiveRemote(t.id);
+    }
   }
 
   void _openTaskSheet(Task t) {
@@ -382,6 +508,19 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
               onPressed: () => _refresh(),
               visualDensity: VisualDensity.compact,
             ),
+          // Sync button — shows status icon + opens setup if not configured
+          _SyncButton(
+            status: _syncStatus,
+            info: _syncInfo,
+            onTap: () async {
+              if (await SyncService.isConfigured) {
+                _syncToCloud();
+              } else {
+                _openSyncSetup();
+              }
+            },
+            onLongPress: _openSyncSetup,
+          ),
         ],
       ),
       body: _buildBody(),
@@ -1114,4 +1253,219 @@ class _TaskCard extends StatelessWidget {
       ),
     );
   }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ─── SYNC UI ─────────────────────────────────────────────────────────────────
+// ══════════════════════════════════════════════════════════════════════════════
+
+enum _SyncStatus { idle, syncing, ok, error }
+
+/// Compact AppBar button showing sync state.
+class _SyncButton extends StatelessWidget {
+  final _SyncStatus status;
+  final String info;
+  final VoidCallback onTap;
+  final VoidCallback onLongPress;
+  const _SyncButton({
+    required this.status, required this.info,
+    required this.onTap,  required this.onLongPress,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    Widget icon;
+    Color color;
+    String tooltip;
+
+    switch (status) {
+      case _SyncStatus.syncing:
+        icon    = const SizedBox(width: 18, height: 18,
+            child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF7C6AF7)));
+        color   = const Color(0xFF7C6AF7);
+        tooltip = 'Syncing…';
+      case _SyncStatus.ok:
+        icon    = const Icon(Icons.cloud_done, size: 20);
+        color   = const Color(0xFF4CAF50);
+        tooltip = 'Synced  $info\nLong-press to reconfigure';
+      case _SyncStatus.error:
+        icon    = const Icon(Icons.cloud_off, size: 20);
+        color   = const Color(0xFFE84040);
+        tooltip = 'Sync error: $info\nLong-press to reconfigure';
+      case _SyncStatus.idle:
+        icon    = const Icon(Icons.cloud_upload_outlined, size: 20);
+        color   = Colors.white38;
+        tooltip = 'Sync to cloud\nLong-press to configure';
+    }
+
+    return Tooltip(
+      message: tooltip,
+      child: InkWell(
+        onTap: onTap,
+        onLongPress: onLongPress,
+        borderRadius: BorderRadius.circular(20),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          child: IconTheme(data: IconThemeData(color: color), child: icon),
+        ),
+      ),
+    );
+  }
+}
+
+/// Bottom-sheet for configuring the sync server URL + credentials.
+class _SyncSetupSheet extends StatefulWidget {
+  final VoidCallback onSaved;
+  const _SyncSetupSheet({required this.onSaved});
+  @override
+  State<_SyncSetupSheet> createState() => _SyncSetupSheetState();
+}
+
+class _SyncSetupSheetState extends State<_SyncSetupSheet> {
+  final _urlCtrl   = TextEditingController();
+  final _emailCtrl = TextEditingController();
+  final _passCtrl  = TextEditingController();
+  bool _obscure    = true;
+  bool _saving     = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSaved();
+  }
+
+  Future<void> _loadSaved() async {
+    final creds = await SyncService.savedCredentials();
+    setState(() {
+      _urlCtrl.text   = creds.baseUrl;
+      _emailCtrl.text = creds.email;
+    });
+  }
+
+  @override
+  void dispose() {
+    _urlCtrl.dispose();
+    _emailCtrl.dispose();
+    _passCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    final url   = _urlCtrl.text.trim();
+    final email = _emailCtrl.text.trim();
+    final pass  = _passCtrl.text;
+
+    if (url.isEmpty || email.isEmpty || pass.isEmpty) {
+      setState(() => _error = 'All fields are required');
+      return;
+    }
+
+    setState(() { _saving = true; _error = null; });
+
+    await SyncService.configure(baseUrl: url, email: email, password: pass);
+    final err = await SyncService.login(email: email, password: pass);
+
+    if (!mounted) return;
+    if (err != null) {
+      setState(() { _saving = false; _error = err; });
+      return;
+    }
+
+    widget.onSaved();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(
+        left: 20, right: 20, top: 20,
+        bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+      ),
+      child: SingleChildScrollView(
+        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            const Icon(Icons.cloud_sync, color: Color(0xFF7C6AF7)),
+            const SizedBox(width: 10),
+            const Text('Cloud Sync Setup', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            const Spacer(),
+            IconButton(
+              icon: const Icon(Icons.close),
+              onPressed: () => Navigator.pop(context),
+              visualDensity: VisualDensity.compact,
+            ),
+          ]),
+          const SizedBox(height: 4),
+          const Text(
+            'Enter your HelioHost backend URL and account credentials.',
+            style: TextStyle(fontSize: 12, color: Colors.white54),
+          ),
+          const SizedBox(height: 16),
+          _field(_urlCtrl,   'Server URL',
+              hint: 'https://yourname.heliohost.us/gantt/backend'),
+          const SizedBox(height: 10),
+          _field(_emailCtrl, 'Email', hint: 'you@example.com'),
+          const SizedBox(height: 10),
+          TextField(
+            controller: _passCtrl,
+            obscureText: _obscure,
+            style: const TextStyle(fontSize: 14),
+            decoration: InputDecoration(
+              labelText: 'Password',
+              filled: true, fillColor: const Color(0xFF252535),
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
+              suffixIcon: IconButton(
+                icon: Icon(_obscure ? Icons.visibility_off : Icons.visibility, size: 18),
+                onPressed: () => setState(() => _obscure = !_obscure),
+              ),
+            ),
+          ),
+          if (_error != null) ...[
+            const SizedBox(height: 8),
+            Row(children: [
+              const Icon(Icons.error_outline, color: Color(0xFFE84040), size: 14),
+              const SizedBox(width: 4),
+              Expanded(child: Text(_error!, style: const TextStyle(color: Color(0xFFE84040), fontSize: 12))),
+            ]),
+          ],
+          const SizedBox(height: 20),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              onPressed: _saving ? null : _save,
+              icon: _saving
+                  ? const SizedBox(width: 16, height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                  : const Icon(Icons.login),
+              label: Text(_saving ? 'Connecting…' : 'Connect & sync'),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Center(
+            child: TextButton(
+              onPressed: () async {
+                await SyncService.clearCredentials();
+                if (mounted) Navigator.pop(context);
+              },
+              child: const Text('Disconnect / clear credentials',
+                  style: TextStyle(fontSize: 12, color: Colors.white38)),
+            ),
+          ),
+        ]),
+      ),
+    );
+  }
+
+  Widget _field(TextEditingController ctrl, String label, {String hint = ''}) =>
+      TextField(
+        controller: ctrl,
+        style: const TextStyle(fontSize: 14),
+        decoration: InputDecoration(
+          labelText: label,
+          hintText: hint,
+          hintStyle: const TextStyle(fontSize: 12, color: Colors.white24),
+          filled: true, fillColor: const Color(0xFF252535),
+          border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
+        ),
+      );
 }

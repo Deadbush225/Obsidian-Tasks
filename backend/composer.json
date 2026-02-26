@@ -1,0 +1,8 @@
+{
+    "name": "locket/backend",
+    "description": "Locket Clone PHP Backend",
+    "require": {
+        "firebase/php-jwt": "^6.0",
+        "vlucas/phpdotenv": "^5.6"
+    }
+}
