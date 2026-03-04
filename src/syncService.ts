@@ -72,7 +72,21 @@ export class GanttSyncService {
     let serverConflicts: any[] = [];
 
     if (localTasks.length > 0) {
-      const payload = localTasks.map((t: Task) => ({
+      // Read the raw file content for every local task so we can send the
+      // full frontmatter to the server.  The server stores it verbatim in
+      // `raw_frontmatter` and returns it on pull — that way every client
+      // (Obsidian, Flutter, …) can reconstruct the exact file without losing
+      // any fields it doesn't natively understand.
+      const rawContents = await Promise.all(
+        localTasks.map(async (t: Task) => {
+          try {
+            const file = app.vault.getFileByPath(t.filePath);
+            return file ? await app.vault.read(file) : null;
+          } catch { return null; }
+        })
+      );
+
+      const payload = localTasks.map((t: Task, i: number) => ({
         id:             t.id,
         title:          t.title,
         status:         t.status,
@@ -85,6 +99,7 @@ export class GanttSyncService {
         project_folder: t.projectFolder ?? '',
         file_path:      t.filePath ?? '',
         updatedAt:      t.updatedAt || Date.now(),   // ← critical: server uses this for conflict resolution
+        rawFrontmatter: rawContents[i] ?? null,      // ← full .md content so server stores it verbatim
       }));
 
       const pushResult = await this._fetch('/tasks/push', {
@@ -159,26 +174,29 @@ export class GanttSyncService {
       ([] as Task[]).concat(...projects.map((p) => p.tasks)).map((t: Task) => [t.id, t])
     );
 
-    const overrideTasks = conflictTasks.map((rt: any) => {
+    const overrideTasks = await Promise.all(conflictTasks.map(async (rt: any) => {
       const local    = localById.get(rt.id);
       const serverTs = rt.updatedAt ?? 0;
       // Winning timestamp: strictly greater than the server's current value
       const winningTs = serverTs + 1;
 
-      // Stamp the new timestamp into the local .md file so the file on disk
-      // reflects what we're pushing (prevents immediate re-conflict on next sync)
+      // Read the raw file content so the server stores the exact file
+      let rawFrontmatter: string | null = null;
       if (local) {
-        const filePath = local.filePath;
-        app.vault.adapter.read(filePath).then(async (content: string) => {
-          const updated = content
-            .replace(/^updated_at:\s*.+$/m, `updated_at: ${winningTs}`)
-            // In case updated_at wasn't in the file yet, insert it
-            .replace(/\n---\n/, `\nupdated_at: ${winningTs}\n---\n`);
-          // Only write if we actually changed something
-          if (updated !== content) {
-            await app.vault.adapter.write(filePath, updated);
+        try {
+          const file = app.vault.getFileByPath(local.filePath);
+          if (file) {
+            rawFrontmatter = await app.vault.read(file);
+            // Stamp the winning timestamp into the raw content before pushing
+            rawFrontmatter = rawFrontmatter
+              .replace(/^(updated_at:\s*).*$/m, `$1${winningTs}`);
+            if (!/^updated_at:/m.test(rawFrontmatter)) {
+              rawFrontmatter = rawFrontmatter.replace(/\n---\n/, `\nupdated_at: ${winningTs}\n---\n`);
+            }
+            // Write the stamped content back to disk
+            await app.vault.modify(file, rawFrontmatter);
           }
-        }).catch(() => {});
+        } catch { rawFrontmatter = null; }
       }
 
       return {
@@ -193,9 +211,10 @@ export class GanttSyncService {
         description:    local?.description    ?? rt.description ?? '',
         project_folder: local?.projectFolder  ?? rt.project_folder ?? '',
         file_path:      local?.filePath       ?? rt.file_path  ?? '',
-        updatedAt:      winningTs,   // beats the server — guaranteed win
+        updatedAt:      winningTs,        // beats the server — guaranteed win
+        rawFrontmatter: rawFrontmatter,   // verbatim file so other clients get the full content
       };
-    });
+    }));
 
     await this._fetch('/tasks/push', {
       method: 'POST',
@@ -206,7 +225,14 @@ export class GanttSyncService {
   /**
    * Write a remote task object into the vault as a .md file.
    * If a local file for this task already exists, update it in-place.
-   * Preserves the body content (Description / Notes sections) of existing files.
+   *
+   * Priority order for file content:
+   *  1. `rt.rawFrontmatter` — the verbatim file content the originating client
+   *     pushed to the server.  Using this preserves every field (assignee, tags,
+   *     parent_id, description, notes body, etc.) regardless of which client
+   *     created the task.
+   *  2. Reconstructed from structured fields — fallback when rawFrontmatter is
+   *     absent (e.g. tasks pushed by the Flutter app).
    */
   private async _applyRemoteTask(
     app: App,
@@ -227,35 +253,62 @@ export class GanttSyncService {
       filePath = `${folder}/${safeName}.md`;
     }
 
-    // Build new frontmatter, preserving existing body
-    const newFm = generateTaskFrontmatter({
-      id:        rt.id,
-      title:     rt.title,
-      status:    rt.status,
-      priority:  rt.priority,
-      startDate: rt.startDate  ?? rt.start_date  ?? '',
-      endDate:   rt.endDate    ?? rt.end_date    ?? '',
-      assignee:  rt.assignee   ?? '',
-      tags:      rt.tags
-        ? (typeof rt.tags === 'string' ? rt.tags.split(',').map((t: string) => t.trim()).filter(Boolean) : rt.tags)
-        : [],
-      description: rt.description ?? '',
-      parentId:  rt.parentId   ?? rt.parent_id   ?? '',
-      updatedAt: rt.updatedAt  ?? 0,
-    });
+    // ── Build the new file content ──────────────────────────────────────────
+    let newContent: string;
 
+    if (rt.rawFrontmatter && typeof rt.rawFrontmatter === 'string' && rt.rawFrontmatter.startsWith('---')) {
+      // Use the verbatim content from the server — this preserves every field
+      // the originating client wrote (Obsidian snake_case keys, tags, notes, etc.)
+      // Ensure updated_at in the raw content matches the server's authoritative ts
+      newContent = rt.rawFrontmatter.replace(
+        /^(updated_at:\s*).*$/m,
+        `$1${rt.updatedAt ?? 0}`
+      );
+      // If updated_at wasn't in the frontmatter, inject it before the closing ---
+      if (!/^updated_at:/m.test(newContent)) {
+        newContent = newContent.replace(/\n---\n/, `\nupdated_at: ${rt.updatedAt ?? 0}\n---\n`);
+      }
+    } else {
+      // Fallback: reconstruct from structured fields (e.g. Flutter-pushed tasks)
+      const reconstructed = generateTaskFrontmatter({
+        id:          rt.id,
+        title:       rt.title,
+        status:      rt.status,
+        priority:    rt.priority,
+        startDate:   rt.startDate  ?? rt.start_date  ?? '',
+        endDate:     rt.endDate    ?? rt.end_date    ?? '',
+        assignee:    rt.assignee   ?? '',
+        tags:        rt.tags
+          ? (typeof rt.tags === 'string'
+              ? rt.tags.split(',').map((t: string) => t.trim()).filter(Boolean)
+              : rt.tags)
+          : [],
+        description: rt.description ?? '',
+        parentId:    rt.parentId   ?? rt.parent_id   ?? '',
+        updatedAt:   rt.updatedAt  ?? 0,
+      });
+
+      // Preserve the existing body (Description / Notes sections) if file exists
+      const existingFile = app.vault.getFileByPath(filePath);
+      if (existingFile) {
+        const oldContent = await app.vault.read(existingFile);
+        const bodyMatch  = oldContent.match(/^---\n[\s\S]*?\n---\n([\s\S]*)$/);
+        const body       = bodyMatch ? bodyMatch[1] : '';
+        // Strip any body that was baked into the reconstructed frontmatter string,
+        // then append the preserved body
+        const fmOnly = reconstructed.replace(/\n---\n[\s\S]*$/, '\n---\n');
+        newContent = fmOnly + (body.startsWith('\n') ? body.slice(1) : body);
+      } else {
+        newContent = reconstructed;
+      }
+    }
+
+    // ── Write to vault ──────────────────────────────────────────────────────
     const existingFile = app.vault.getFileByPath(filePath);
     if (existingFile) {
-      // Preserve the user's body (everything after the closing ---)
-      const oldContent = await app.vault.read(existingFile);
-      const bodyMatch  = oldContent.match(/^---\n[\s\S]*?\n---\n([\s\S]*)$/);
-      const body       = bodyMatch ? bodyMatch[1] : '\n# ' + (rt.title ?? '') + '\n\n## Description\n\n\n\n## Notes\n\n';
-      // Replace only the frontmatter block
-      const newContent = newFm.replace(/\n---\n[\s\S]*$/, '\n---\n') + body.replace(/^\n/, '');
       await app.vault.modify(existingFile, newContent);
     } else {
-      await app.vault.create(filePath, newFm);
+      await app.vault.create(filePath, newContent);
     }
   }
 }
-

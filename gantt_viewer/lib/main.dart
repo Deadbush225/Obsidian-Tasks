@@ -435,29 +435,60 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       final priority     = rt['priority'] as String? ?? 'medium';
       final startDate    = rt['startDate'] as String?;
       final endDate      = rt['endDate'] as String?;
+      // rawFrontmatter: full .md file content pushed by the originating client
+      final rawFm        = rt['rawFrontmatter'] as String?;
 
       final local = localById[id];
 
       if (local != null) {
         // Only overwrite if server is strictly newer
         if (serverTs <= local.updatedAt) continue;
-        await _writeTaskField(local.filePath, {
-          'title':      title,
-          'status':     status,
-          'priority':   priority,
-          'startDate':  startDate ?? '',
-          'endDate':    endDate ?? '',
-          'updated_at': serverTs.toString(),
-        });
+
+        if (rawFm != null && rawFm.startsWith('---')) {
+          // Use the verbatim file the other client pushed — preserves all fields
+          // Stamp the correct updated_at in case the raw content has a stale value
+          var content = rawFm.replaceAllMapped(
+            RegExp(r'^(updated_at:\s*).*$', multiLine: true),
+            (_) => 'updated_at: $serverTs',
+          );
+          if (!content.contains(RegExp(r'^updated_at:', multiLine: true))) {
+            content = content.replaceFirst(RegExp(r'\n---\n'), '\nupdated_at: $serverTs\n---\n');
+          }
+          await File(local.filePath).writeAsString(content);
+        } else {
+          // Fallback: patch individual fields for tasks without rawFrontmatter
+          await _writeTaskField(local.filePath, {
+            'title':      title,
+            'status':     status,
+            'priority':   priority,
+            'startDate':  startDate ?? '',
+            'endDate':    endDate ?? '',
+            'updated_at': serverTs.toString(),
+          });
+        }
       } else {
         // New task from server — create a local file
         final safeName = title.replaceAll(RegExp(r'[\\/:*?"<>|]'), '-');
         final filePath = '$_projectRoot/$safeName.md';
-        final content  = _buildFrontmatter(
-          id: id, title: title, status: status, priority: priority,
-          startDate: startDate, endDate: endDate,
-          updatedAt: serverTs,
-        );
+
+        String content;
+        if (rawFm != null && rawFm.startsWith('---')) {
+          // Use the verbatim content — preserves every field from the source client
+          content = rawFm.replaceAllMapped(
+            RegExp(r'^(updated_at:\s*).*$', multiLine: true),
+            (_) => 'updated_at: $serverTs',
+          );
+          if (!content.contains(RegExp(r'^updated_at:', multiLine: true))) {
+            content = content.replaceFirst(RegExp(r'\n---\n'), '\nupdated_at: $serverTs\n---\n');
+          }
+        } else {
+          // Fallback for tasks that didn't include rawFrontmatter (older clients)
+          content = _buildFrontmatter(
+            id: id, title: title, status: status, priority: priority,
+            startDate: startDate, endDate: endDate,
+            updatedAt: serverTs,
+          );
+        }
         await File(filePath).writeAsString(content);
       }
     }
@@ -519,18 +550,31 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       // Find matching local task by id
       final local = _tasks.where((t) => t.id == c.serverTask['id']).firstOrNull;
       if (local == null) continue;
-      // Write server fields AND stamp the server's updatedAt so future pushes
-      // carry the correct timestamp and won't get overwritten again.
-      final serverTs = (c.serverTask['updatedAt'] as int?)?.toString()
-          ?? DateTime.now().millisecondsSinceEpoch.toString();
-      await _writeTaskField(local.filePath, {
-        'title':      c.serverTask['title'] as String? ?? local.title,
-        'status':     c.serverTask['status'] as String? ?? local.status,
-        'priority':   c.serverTask['priority'] as String? ?? local.priority,
-        'startDate':  (c.serverTask['startDate'] as String?) ?? local.startDate ?? '',
-        'endDate':    (c.serverTask['endDate'] as String?) ?? local.endDate ?? '',
-        'updated_at': serverTs,
-      });
+
+      final serverTs  = (c.serverTask['updatedAt'] as int?) ?? DateTime.now().millisecondsSinceEpoch;
+      final rawFm     = c.serverTask['rawFrontmatter'] as String?;
+
+      if (rawFm != null && rawFm.startsWith('---')) {
+        // Write the verbatim file content from the server — preserves all fields
+        var content = rawFm.replaceAllMapped(
+          RegExp(r'^(updated_at:\s*).*$', multiLine: true),
+          (_) => 'updated_at: $serverTs',
+        );
+        if (!content.contains(RegExp(r'^updated_at:', multiLine: true))) {
+          content = content.replaceFirst(RegExp(r'\n---\n'), '\nupdated_at: $serverTs\n---\n');
+        }
+        await File(local.filePath).writeAsString(content);
+      } else {
+        // Fallback: patch known fields when rawFrontmatter isn't available
+        await _writeTaskField(local.filePath, {
+          'title':      c.serverTask['title'] as String? ?? local.title,
+          'status':     c.serverTask['status'] as String? ?? local.status,
+          'priority':   c.serverTask['priority'] as String? ?? local.priority,
+          'startDate':  (c.serverTask['startDate'] as String?) ?? local.startDate ?? '',
+          'endDate':    (c.serverTask['endDate'] as String?) ?? local.endDate ?? '',
+          'updated_at': serverTs.toString(),
+        });
+      }
     }
     await _refresh();
   }
