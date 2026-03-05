@@ -290,7 +290,7 @@
 		overflow: hidden;
 		text-overflow: ellipsis;
 		cursor: pointer;
-		color: var(--text-accent);
+		color: var(--text-normal);
 		line-height: 1.2;
 	}
 
